@@ -1,0 +1,145 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Preencher Indicadores - Gestor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="flex h-screen bg-gray-100">
+    <!-- Sidebar -->
+    <div id="sidebar" class="sidebar bg-gradient-to-b from-blue-900 to-blue-800 text-white py-4 flex flex-col">
+            <div class="px-4 py-2 flex items-center ">
+                <div class="flex items-center space-x-2">
+                    <!-- Logo e nome da empresa removidos conforme solicitado -->
+                </div>
+            </div>
+        
+        <div class="mt-8 flex-1">
+            <nav>
+                <a href="indexgestores.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-600 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-3" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                    </svg>
+                    <span class="sidebar-item">Dashboard Geral</span>
+                </a>
+                <a href="relatorio-gestores.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-3" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" />
+                    </svg>
+                    <span class="sidebar-item">Painel de Indicadores</span>
+                </a>
+                <a href="preencher-indicadores.html" class="flex items-center px-4 py-3 bg-blue-700 text-white hover:bg-blue-700 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="4" x2="4" y2="20" />
+                        <line x1="4" y1="20" x2="20" y2="20" />
+                        <polyline points="4,16 9,10 13,14 17,8 " />
+                    </svg>
+                    <span class="sidebar-item ml-3">Preencher indicadores</span>
+                </a>
+                <a href="logs-gestores.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 2a6 6 0 00-6 6v2c0 .628-.214 1.245-.602 1.735L2.293 14.293A1 1 0 003 16h14a1 1 0 00.707-1.707l-1.105-1.105A2.996 2.996 0 0116 10V8a6 6 0 00-6-6zM10 18a2 2 0 002-2H8a2 2 0 002 2z" />
+                    </svg>
+                    <span class="sidebar-item">Logs</span> 
+                </a>
+                <a href="configuracoes-gestores.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-3" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+                    </svg>
+                    <span class="sidebar-item">Configurações</span>
+                </a>
+            </nav>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+        <!-- Navbar -->
+        <header class="bg-white shadow-sm z-10">
+                <div class="flex items-center justify-between px-6 py-3">
+                    <div class="flex items-center">
+                        <h1 class="text-xl font-semibold text-gray-800">Preencher Indicadores</h1>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div class="relative">
+                            <button id="profileButton" class="flex items-center space-x-2 focus:outline-none">
+                                <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
+                                    <span class="font-semibold text-white text-sm" id="iniciais-usuario">--</span>
+                                </div>
+                                <div class="flex flex-col items-start">
+                                    <span id="campo-nome-usuario" class="text-blue-900 font-bold text-sm">Carregando...</span>
+                                    <div id="campo-detalhe-perfil" class="text-xs text-blue-700">...</div>
+                                </div>
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                                </svg>
+                            </button>
+                            <div id="profileMenu" class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 hidden z-20">
+                                <a href="configuracoes-gestores.html" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Configurações</a>
+                                <div class="border-t border-gray-100"></div>
+                                <button onclick="logout()" 
+                                    class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left">
+                                    Sair
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+        <!-- Conteúdo Principal -->
+        <main class="flex-1 overflow-y-auto bg-gray-50 p-4">
+          <div id="indicadores-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            <!-- Aqui os cards dos indicadores vão aparecer dinamicamente -->
+          </div>
+        </main>
+    </div>
+</div>
+
+
+<!-- Modal de Preenchimento -->
+<div id="modal-preencher" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 hidden">
+  <div class="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
+      <h2 id="titulo-indicador" class="text-xl font-bold mb-4">Preencher Indicador</h2>
+
+      <form id="formPreenchimento">
+          <div>
+              <label>Valor:</label>
+              <input type="number" id="valor" step="0.01" required class="w-full border rounded px-2 py-1">
+          </div>
+          <div>
+              <label>Mês (MM/AAAA):</label>
+              <input type="datetime" id="mes" placeholder="06/2025" required class="w-full border rounded px-2 py-1">
+          </div>
+          <div>
+              <label>Comentário:</label>
+              <input type="text" id="comentario" class="w-full border rounded px-2 py-1">
+          </div>
+          <div>
+              <label>Provas (arquivo):</label>
+              <input type="file" id="provas" class="w-full border rounded px-2 py-1">
+          </div>
+          <div>
+              <label>Origem da Prova (link ou caminho):</label>
+              <input type="text" id="origem" class="w-full border rounded px-2 py-1">
+          </div>
+
+          <div class="mt-4 flex justify-end gap-2">
+              <button type="button" onclick="fecharModal()" class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded">Cancelar</button>
+              <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Salvar</button>
+          </div>
+      </form>
+  </div>
+</div>
+
+<script src="js/comum.js"></script>
+<script src="js/preencher-indicadores-gestores.js"></script>
+<script src="js/config.js"></script>
+</body>
+</html>

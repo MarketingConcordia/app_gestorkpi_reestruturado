@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Indicadores - Perfil Master</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- SheetJS para exportar Excel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- html2pdf.js para exportar PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="style.css">
+
+    <script>
+        // Proteção: apenas usuários com perfil 'master' podem acessar
+        const perfil = localStorage.getItem('perfil_usuario');
+        if (perfil !== 'master') {
+            alert("Acesso negado. Esta página é exclusiva para o perfil Master.");
+            window.location.href = 'indexgestores.html'; // ou login.html se preferir
+        }
+    </script>
+</head>
+<body>
+    <div class="flex h-screen bg-gray-100">
+        <!-- Sidebar -->
+        <div id="sidebar" class="sidebar bg-gradient-to-b from-blue-900 to-blue-800 text-white py-4 flex flex-col">
+            <!-- <div class="px-4 py-2 flex items-center ">
+                <div class="flex items-center space-x-2">
+                     Logo e nome da empresa removidos conforme solicitado
+                </div>
+            </div> -->
+            <div class="mt-8 flex-1">
+                <nav>
+                    <a href="index.html" class="flex items-center px-4 py-3 bg-blue-700 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                        </svg>
+                        <span class="sidebar-item ml-3">Dashboard Geral</span>
+                    </a>
+                    <a href="relatorios.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" />
+                        </svg>
+                        <span class="sidebar-item ml-3">Painel de Indicadores</span>
+                    </a>
+                    <a href="setores.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M4 2a2 2 0 00-2 2v14h16V4a2 2 0 00-2-2H4zm2 4h2v2H6V6zm0 3h2v2H6V9zm3-3h2v2H9V6zm0 3h2v2H9V9zm3-3h2v2h-2V6zm0 3h2v2h-2V9z" />
+                        </svg>
+                        <span class="sidebar-item ml-3">Cadastrar Setores</span>
+                    </a>
+                    <a href="equipe.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
+                        </svg>
+                        <span class="sidebar-item ml-3">Cadastrar equipe</span>
+                    </a>
+                    <a href="indicadores.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="4" y1="4" x2="4" y2="20" />
+                            <line x1="4" y1="20" x2="20" y2="20" />
+                            <polyline points="4,16 9,10 13,14 17,8 " />
+                        </svg>
+                        <span class="sidebar-item ml-3">Cadastrar indicadores</span>
+                    </a>
+                    <a href="logs.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 2a6 6 0 00-6 6v2c0 .628-.214 1.245-.602 1.735L2.293 14.293A1 1 0 003 16h14a1 1 0 00.707-1.707l-1.105-1.105A2.996 2.996 0 0116 10V8a6 6 0 00-6-6zM10 18a2 2 0 002-2H8a2 2 0 002 2z" />
+                        </svg>
+                        <span class="sidebar-item ml-3">Logs</span> 
+                    </a>
+                    <a href="configuracoes.html" class="flex items-center px-4 py-3 text-white hover:bg-blue-700 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+                        </svg>
+                        <span class="sidebar-item ml-3">Configurações</span>
+                    </a>
+                </nav>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+            <!-- Navbar -->
+            <header class="bg-white shadow-sm z-10">
+                <div class="flex items-center justify-between px-6 py-3">
+                    <div class="flex items-center">
+                        <h1 class="text-xl font-semibold text-gray-800">Dashboard Geral</h1>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        
+                        <div class="relative">
+                            <button id="profileButton" class="flex items-center space-x-2 focus:outline-none">
+                                <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
+                                    <span class="font-semibold text-white text-sm" id="iniciais-usuario">--</span>
+                                </div>
+                                <div class="flex flex-col items-start">
+                                    <span id="campo-nome-usuario" class="text-blue-900 font-bold text-sm">Carregando...</span>
+                                    <div id="campo-detalhe-perfil" class="text-xs text-blue-700">...</div>
+                                </div>
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                                </svg>
+                            </button>
+                            <div id="profileMenu" class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 hidden z-20">
+                                <a href="configuracoes.html" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Configurações</a>
+                                <div class="border-t border-gray-100"></div>
+                                <button onclick="logout()" 
+                                    class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left">
+                                    Sair
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Filtros -->
+            <div class="bg-white shadow-sm p-4 border-b">
+                <div class="flex flex-wrap items-center gap-4">
+                    <div class="flex-1 min-w-[200px]">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Área/Setor</label>
+                        <select id="filter-setor" class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="todos">Todos os Setores</option>
+                        </select>
+                    </div>
+                    <div class="filter-group flex flex-col">
+                        <label for="filter-ano" class="text-sm font-medium text-gray-700 mb-1">Ano:</label>
+                        <select id="filter-ano" class="border px-3 py-2 rounded">
+                            <option value="todos">Todos os Anos</option>
+                        </select>
+                    </div>
+                    <div class="filter-group flex flex-col">
+                        <label for="filter-mes" class="text-sm font-medium text-gray-700 mb-1">Mês:</label>
+                        <select id="filter-mes" class="border px-3 py-2 rounded">
+                            <option value="todos">Todos os Meses</option>
+                            <option value="mes-atual">Mês Atual</option>
+                        </select>
+                    </div>
+                    <div class="flex-1 min-w-[200px]">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                        <select id="filter-status" class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="todos">Todos</option>
+                            <option value="atingidos">Atingidos</option>
+                            <option value="nao-atingidos">Não Atingidos</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end">
+                        <button id="limpar-filtros" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                            Limpar Filtros
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Conteúdo Principal -->
+            <main class="flex-1 overflow-y-auto bg-gray-50 p-4">
+                <div class="indicadores-grid" id="indicadores-container">
+                    <!-- Os cards de indicadores serão inseridos aqui via JavaScript -->
+                </div>
+                <div id="paginacao" class="mt-4 flex gap-2 items-center flex-wrap"></div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Modal de Detalhes -->
+    <div id="detalhe-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <div class="p-6" id="modal-content">
+                <!-- Conteúdo do modal será inserido aqui via JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de edição de uma única meta mensal -->
+    <div id="editar-meta-unica-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg shadow-lg p-6 w-[90%] max-w-md">
+            <h3 class="text-xl font-semibold mb-4 text-blue-800">Editar Meta do Mês</h3>
+            <div class="mb-4">
+                <label for="input-meta-unica" class="block text-sm font-medium text-gray-700 mb-1">Nova Meta:</label>
+                <input type="number" id="input-meta-unica" step="0.01" class="w-full border border-gray-300 rounded px-3 py-2" step="any">
+            </div>
+            <div class="flex justify-end gap-2">
+                <button id="cancelar-meta-unica" class="px-4 py-2 rounded bg-gray-300 hover:bg-gray-400 text-sm">Cancelar</button>
+                <button id="salvar-meta-unica" class="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de edição de um unico valor mensal -->
+    <div id="editar-valor-unico-modal" class="fixed inset-0 z-50 bg-black bg-opacity-50 hidden flex items-center justify-center">
+        <div class="bg-white p-6 rounded shadow-lg w-full max-w-md">
+            <h2 class="text-lg font-semibold mb-4">Editar Valor Realizado</h2>
+            <input type="number" id="campo-novo-valor" step="0.01" class="w-full p-2 border rounded mb-4" />
+            <div class="flex justify-end gap-2">
+                <button id="cancelar-edicao-unico" class="bg-gray-300 px-4 py-2 rounded">Cancelar</button>
+                <button id="salvar-valor-unico" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pop-up de Comentário -->
+    <div id="popup-comentario" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-lg max-w-md w-full p-6 relative">
+        <button onclick="fecharPopupComentario()" class="absolute top-2 right-3 text-gray-600 hover:text-red-600 text-xl">×</button>
+        <h3 class="text-lg font-semibold mb-2 text-gray-800">Comentário</h3>
+        <p id="conteudo-comentario" class="text-gray-700 text-sm"></p>
+    </div>
+    </div>
+
+    <!-- Pop-up de Provas -->
+    <div id="popup-provas" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-lg max-w-md w-full p-6 relative">
+        <button onclick="fecharPopupProvas()" class="absolute top-2 right-3 text-gray-600 hover:text-red-600 text-xl">×</button>
+        <h3 class="text-lg font-semibold mb-3 text-gray-800">Prova Enviada</h3>
+        <a id="link-prova" href="#" target="_blank" class="text-blue-600 underline text-sm">Abrir Documento</a>
+    </div>
+    </div>
+
+
+    <script src="js/storage-mitigate.js"></script>
+    <script src="js/index.js"></script>
+    <script src="js/comum.js"></script>
+    <script src="js/config.js"></script>
+</body>
+</html>
