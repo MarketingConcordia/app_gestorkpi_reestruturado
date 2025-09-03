@@ -1,6 +1,6 @@
 from datetime import datetime, date
 from django.utils.timezone import make_aware
-from django.db.models import F
+from django.db.models import F, Q
 
 from rest_framework import viewsets, generics, status, serializers
 from rest_framework.decorators import api_view, permission_classes, action
@@ -35,7 +35,10 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
 
         # 🔒 Gestor vê apenas preenchimentos dos seus setores
         if user.perfil == 'gestor':
-            qs = qs.filter(indicador__setor__in=user.setores.all())
+            qs = qs.filter(
+                Q(indicador__setor__in=user.setores.all()) |
+                Q(indicador__visibilidade=True)
+            )
 
         # filtros opcionais
         setor = self.request.query_params.get('setor')

@@ -740,7 +740,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (filtroSetor) filtroSetor.value = 'todos';
       if (filtroAno) filtroAno.value = 'todos';
       popularMesesDoAnoSelecionado('todos');
-      if (filtroMes) filtroMes.value = 'mes-atual';
+      if (filtroMes) filtroMes.value = 'todos';
       if (filtroStatus) filtroStatus.value = 'todos';
       __PAGE_INDEX = 1;
       aplicarFiltros();

@@ -182,7 +182,12 @@ class IndicadoresConsolidadosView(APIView):
         )
 
         if usuario.perfil == "gestor":
-            qs_ind = qs_ind.filter(Q(visibilidade=True) | Q(setor__in=usuario.setores.all()))
+            qs_ind = qs_ind.filter(
+                Q(setor__in=usuario.setores.all()) |
+                Q(visibilidade=True) |
+                Q(visibilidade__iexact="true") |   # se for CharField
+                Q(visibilidade__iexact="1")        # se for string numérica
+            )
 
         dados = []
         for indicador in qs_ind:
