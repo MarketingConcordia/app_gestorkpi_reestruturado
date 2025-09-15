@@ -25,3 +25,12 @@ staticfiles/
 # Logs
 *.log
 logs.log
+
+# Env files (backend e frontend)
+.env
+.env.*
+front-app/.env
+front-app/.env.*
+# mantenha apenas arquivos de exemplo
+!.env.example
+!front-app/.env.example
