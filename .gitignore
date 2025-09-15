@@ -1,2 +1,27 @@
-# Excluir arquivos de ambiente
-.env
+# Python / Django
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+*.so
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Django / dados locais
+*.sqlite3
+media/
+staticfiles/
+
+# Editor / SO
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
+logs.log
