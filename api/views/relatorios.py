@@ -1,11 +1,12 @@
-from django.db.models import F, Q, Count
+from django.db.models import F, Q, Count, Exists, OuterRef, Subquery, IntegerField, Sum, Case, When
+from django.db.models.functions import ExtractMonth, ExtractYear, Coalesce
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from api.models import Preenchimento, Indicador, PermissaoIndicador
-from api.services.reports import gerar_relatorio_pdf, gerar_relatorio_excel
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 
+from api.models import Preenchimento, Indicador, PermissaoIndicador, MetaMensal
+from api.services.reports import gerar_relatorio_pdf, gerar_relatorio_excel
 
 
 # =========================
@@ -14,7 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 class RelatorioView(APIView):
     """
     - Master → vê todos os indicadores
-    - Gestor → vê apenas indicadores de seus setores ou liberados manualmente
+    - Gestor → vê indicadores visíveis, dos seus setores ou liberados manualmente
     """
     permission_classes = [IsAuthenticated]
 
@@ -22,44 +23,92 @@ class RelatorioView(APIView):
         user = request.user
         setor = request.query_params.get('setor')
         mes = request.query_params.get('mes')
+        ano = request.query_params.get('ano')
         indicador = request.query_params.get('indicador')
 
-        preenchimentos = Preenchimento.objects.all()
+        # Base otimizada
+        preenchimentos = (
+            Preenchimento.objects
+            .select_related('indicador', 'indicador__setor')
+            .all()
+        )
 
-        # 🔒 Regra de visibilidade do Gestor
-        if user.perfil == 'gestor':
-            setores_ids = user.setores.values_list('id', flat=True)
-            indicadores_ids_setor = Indicador.objects.filter(
-                setor_id__in=setores_ids
-            ).values_list('id', flat=True)
-            indicadores_ids_manual = PermissaoIndicador.objects.filter(
-                usuario=user
-            ).values_list('indicador_id', flat=True)
-
-            indicadores_ids = list(indicadores_ids_setor) + list(indicadores_ids_manual)
-            preenchimentos = preenchimentos.filter(indicador_id__in=indicadores_ids)
+        # 🔒 Regra de visibilidade do Gestor (visível | setor | permissão manual)
+        if getattr(user, 'perfil', None) == 'gestor':
+            perm_subq = PermissaoIndicador.objects.filter(usuario=user, indicador=OuterRef('indicador_id'))
+            preenchimentos = preenchimentos.filter(
+                Q(indicador__visibilidade=True) |
+                Q(indicador__setor__in=user.setores.all()) |
+                Exists(perm_subq)
+            )
 
         # 🔎 Filtros opcionais
         if setor:
-            preenchimentos = preenchimentos.filter(indicador__setor__id=setor)
+            preenchimentos = preenchimentos.filter(indicador__setor_id=setor)
+        if indicador:
+            preenchimentos = preenchimentos.filter(indicador_id=indicador)
         if mes:
             try:
                 preenchimentos = preenchimentos.filter(mes=int(mes))
             except ValueError:
                 pass
-        if indicador:
-            preenchimentos = preenchimentos.filter(indicador__id=indicador)
+        if ano:
+            try:
+                preenchimentos = preenchimentos.filter(ano=int(ano))
+            except ValueError:
+                pass
 
-        # 📊 Agregados
-        total = preenchimentos.count()
-        atingidos = preenchimentos.filter(valor_realizado__gte=F('indicador__valor_meta')).count()
+        # 📊 Atingidos usando MetaMensal (se existir) com fallback para Indicador.valor_meta
+        meta_subq = (
+            MetaMensal.objects
+            .filter(indicador_id=OuterRef('indicador_id'))
+            .annotate(y=ExtractYear('mes'), m=ExtractMonth('mes'))
+            .filter(y=OuterRef('ano'), m=OuterRef('mes'))
+            .values('valor_meta')[:1]
+        )
+
+        preenchimentos = preenchimentos.annotate(
+            valor_meta_ref=Coalesce(Subquery(meta_subq), F('indicador__valor_meta'))
+        )
+
+        agregados = preenchimentos.aggregate(
+            total=Count('id'),
+            atingidos=Sum(
+                Case(
+                    When(valor_realizado__gte=F('valor_meta_ref'), then=1),
+                    default=0,
+                    output_field=IntegerField()
+                )
+            )
+        )
+        total = agregados.get('total') or 0
+        atingidos = agregados.get('atingidos') or 0
         nao_atingidos = total - atingidos
 
-        dados_por_indicador = preenchimentos.values('indicador__nome').annotate(
-            total=Count('id'),
-            atingidos=Count('id', filter=Q(valor_realizado__gte=F('indicador__valor_meta'))),
-            nao_atingidos=Count('id', filter=Q(valor_realizado__lt=F('indicador__valor_meta')))
+        dados_por_indicador_qs = (
+            preenchimentos
+            .values('indicador__nome')
+            .annotate(
+                total=Count('id'),
+                atingidos=Sum(
+                    Case(
+                        When(valor_realizado__gte=F('valor_meta_ref'), then=1),
+                        default=0,
+                        output_field=IntegerField()
+                    )
+                ),
+                nao_atingidos=Sum(
+                    Case(
+                        When(valor_realizado__lt=F('valor_meta_ref'), then=1),
+                        default=0,
+                        output_field=IntegerField()
+                    )
+                ),
+            )
+            .order_by('indicador__nome')
         )
+
+        dados_por_indicador = list(dados_por_indicador_qs)
 
         return Response({
             "total_registros": total,
@@ -72,9 +121,13 @@ class RelatorioView(APIView):
 # =========================
 #    EXPORTAÇÕES (PDF/XLSX)
 # =========================
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def relatorio_pdf(request):
     return gerar_relatorio_pdf()
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def relatorio_excel(request):
     return gerar_relatorio_excel()

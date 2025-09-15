@@ -4,6 +4,69 @@
 let preenchimentosRealizados = new Set();
 let indicadorSelecionado = null;
 
+// IDs de setores do usuário logado (gestor)
+let __setoresUsuarioIds = new Set();      // Number
+let __setoresUsuarioIdsStr = new Set();   // String (espelha os mesmos IDs)
+
+// =============================
+// 🔹 Helpers
+// =============================
+
+// Extrai o ID do setor de um item do endpoint de pendentes, tolerando formatos diferentes
+function extrairSetorIdDoItem(item) {
+  // Tenta campos comuns e variações aninhadas que costumam aparecer
+  const candidatos = [
+    item?.setor,
+    item?.setor?.id,
+    item?.setor,                 // às vezes vem o id direto neste campo
+    item?.indicador_setor,
+    item?.indicador?.setor,
+    item?.indicador?.setor?.id,
+  ];
+
+  for (const c of candidatos) {
+    if (c !== undefined && c !== null && c !== "") return c;
+  }
+  return null;
+}
+
+// =============================
+// 🔹 Carregar setores do usuário (IDs)
+// =============================
+async function carregarUsuarioSetores() {
+  const token = localStorage.getItem('access');
+  try {
+    const res = await fetch(`${window.API_BASE_URL}/api/meu-usuario/`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error("Erro ao buscar /api/meu-usuario/");
+
+    const user = await res.json();
+
+    // Coleta IDs dos setores do usuário (inclui setor_principal como fallback)
+    const idsDiretos = (Array.isArray(user?.setores) ? user.setores : [])
+      .map(s => s?.id)
+      .filter(id => id != null);
+
+    const idPrincipal = user?.setor_principal?.id;
+
+    const ids = [...new Set([
+      ...idsDiretos,
+      ...(idPrincipal != null ? [idPrincipal] : []),
+    ])];
+
+    __setoresUsuarioIds = new Set(ids.map(n => Number(n)));
+    __setoresUsuarioIdsStr = new Set(ids.map(String));
+
+    console.debug("[meu-usuario] setores IDs (Number):", Array.from(__setoresUsuarioIds));
+    console.debug("[meu-usuario] setores IDs (String):", Array.from(__setoresUsuarioIdsStr));
+  } catch (e) {
+    console.error("Falha ao carregar setores do usuário:", e);
+    __setoresUsuarioIds = new Set();
+    __setoresUsuarioIdsStr = new Set();
+  }
+}
+
 // =============================
 // 🔹 Carregar preenchimentos já feitos
 // =============================
@@ -34,7 +97,7 @@ async function carregarPreenchimentos() {
 }
 
 // =============================
-// 🔹 Carregar indicadores pendentes agrupados
+// 🔹 Carregar indicadores pendentes (apenas dos setores do gestor)
 // =============================
 async function carregarIndicadores() {
   const token = localStorage.getItem('access');
@@ -44,13 +107,45 @@ async function carregarIndicadores() {
       headers: { 'Authorization': `Bearer ${token}` }
     });
 
-    if (!res.ok) throw new Error("Erro ao buscar indicadores");
+    if (!res.ok) throw new Error("Erro ao buscar indicadores pendentes");
     const data = await res.json();
     if (!Array.isArray(data)) throw new Error("Resposta inválida (esperado array)");
 
+    // Amostra de payload para debug
+    console.debug("[pendentes] amostra bruta:", data.slice(0, 3));
+
+    if (__setoresUsuarioIds.size === 0 && __setoresUsuarioIdsStr.size === 0) {
+      console.warn("Usuário sem IDs de setor associados. Nada será exibido.");
+      renderizarIndicadores([]);
+      return;
+    }
+
+    // 🔒 Mantém somente itens cujo setor_id pertence aos setores do usuário (comparando número OU string)
+    const pendentesDoMeuSetor = data.filter(item => {
+      const sid = extrairSetorIdDoItem(item);
+      return (
+        sid != null &&
+        ( __setoresUsuarioIds.has(Number(sid)) || __setoresUsuarioIdsStr.has(String(sid)) )
+      );
+    });
+
+    // Se vier vazio, loga um diagnóstico
+    if (pendentesDoMeuSetor.length === 0) {
+      console.warn("[pendentes] vazio após filtro. Mapeando setor_id detectado nos primeiros itens:");
+      data.slice(0, 10).forEach((it, idx) => {
+        const sid = extrairSetorIdDoItem(it);
+        console.warn(`  #${idx}`, {
+          setor_detectado: sid,
+          pertenceAoUsuario:
+            sid != null &&
+            ( __setoresUsuarioIds.has(Number(sid)) || __setoresUsuarioIdsStr.has(String(sid)) )
+        });
+      });
+    }
+
     // 🔹 Agrupar por indicador
     const agrupados = {};
-    data.forEach(item => {
+    pendentesDoMeuSetor.forEach(item => {
       const chave = `${item.id}`;
       if (!agrupados[chave]) {
         agrupados[chave] = {
@@ -80,6 +175,14 @@ function renderizarIndicadores(lista) {
   const container = document.getElementById('indicadores-container');
   container.innerHTML = '';
 
+  if (!Array.isArray(lista) || lista.length === 0) {
+    container.innerHTML = `
+      <div class="p-4 bg-yellow-50 text-yellow-800 border border-yellow-200 rounded">
+        Nenhum indicador pendente para seus setores.
+      </div>`;
+    return;
+  }
+
   lista.forEach(indicador => {
     const card = document.createElement('div');
     card.className = "bg-white shadow-md border-l-4 border-blue-600 p-4 rounded-lg flex flex-col gap-4 mb-6";
@@ -91,7 +194,7 @@ function renderizarIndicadores(lista) {
       listaMeses += `
         <button 
           class="bg-yellow-100 hover:bg-yellow-200 text-yellow-900 px-3 py-1 rounded text-sm"
-          onclick="abrirModal(${indicador.id}, '${indicador.nome}', ${p.mes}, ${p.ano})"
+          onclick="abrirModal(${indicador.id}, '${indicador.nome.replace(/'/g, "\\'")}', ${p.mes}, ${p.ano})"
         >
           ${competencia}
         </button>
@@ -194,8 +297,12 @@ document.getElementById('formPreenchimento').addEventListener('submit', async fu
 
     alert('Preenchimento salvo com sucesso!');
     fecharModal();
+
+    // Recarrega os dados para refletir a pendência resolvida
     await carregarPreenchimentos();
-    carregarIndicadores();
+    // Opcional: recarregar setores do usuário (não deve mudar, mas mantém consistência de estado)
+    // await carregarUsuarioSetores();
+    await carregarIndicadores();
 
   } catch (err) {
     console.error("Erro detalhado:", err);
@@ -207,6 +314,8 @@ document.getElementById('formPreenchimento').addEventListener('submit', async fu
 // 🔹 Inicialização
 // =============================
 window.onload = async () => {
+  // Ordem importa: setores do usuário antes de filtrar pendentes
   await carregarPreenchimentos();
-  carregarIndicadores();
+  await carregarUsuarioSetores();   // popula __setoresUsuarioIds/__setoresUsuarioIdsStr
+  await carregarIndicadores();      // lista só pendentes dos setores do gestor logado
 };

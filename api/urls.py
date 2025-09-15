@@ -4,43 +4,28 @@ from django.conf.urls.static import static
 from rest_framework import routers
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from api.views import (
-    # ViewSets
-    SetorViewSet,
-    UsuarioViewSet,
-    IndicadorViewSet,
-    PreenchimentoViewSet,
-    ConfiguracaoArmazenamentoViewSet,
-    LogDeAcaoViewSet,
-    ConfiguracaoViewSet,
-    MetaMensalViewSet,
-
-    # Views customizadas / auxiliares
-    me,
-    meu_usuario,
-    meus_preenchimentos,
-    indicadores_pendentes,
-    gerar_relatorio_pdf,
-    gerar_relatorio_excel,
-    usuario_logado,
-    RelatorioView,
-    MetaCreateView,
-    MyTokenObtainPairView,
-    IndicadoresConsolidadosView,
-)
+# ---- Imports explícitos por módulo (mais robusto) ----
+from api.views.setores import SetorViewSet
+from api.views.usuarios import UsuarioViewSet
+from api.views.indicadores import IndicadorViewSet, MetaMensalViewSet, IndicadoresConsolidadosView, MetaCreateView
+from api.views.preenchimentos import PreenchimentoViewSet, meus_preenchimentos, indicadores_pendentes
+from api.views.configuracoes import ConfiguracaoArmazenamentoViewSet, ConfiguracaoViewSet
+from api.views.logs import LogDeAcaoViewSet
+from api.views.relatorios import RelatorioView, relatorio_pdf, relatorio_excel
+from api.views.auth import MyTokenObtainPairView, me, meu_usuario, usuario_logado
 
 # -----------------------------
 # Router (ViewSets)
 # -----------------------------
 router = routers.DefaultRouter()
-router.register(r'setores', SetorViewSet)
-router.register(r'usuarios', UsuarioViewSet)
-router.register(r'indicadores', IndicadorViewSet, basename='indicadores')
-router.register(r'preenchimentos', PreenchimentoViewSet, basename='preenchimentos')
-router.register(r'configuracoes-arm', ConfiguracaoArmazenamentoViewSet)
-router.register(r'logs', LogDeAcaoViewSet, basename='logs')
-router.register(r'configuracoes', ConfiguracaoViewSet)
-router.register(r'metas-mensais', MetaMensalViewSet)
+router.register(r'setores', SetorViewSet, basename='setor')
+router.register(r'usuarios', UsuarioViewSet, basename='usuario')
+router.register(r'indicadores', IndicadorViewSet, basename='indicador')
+router.register(r'preenchimentos', PreenchimentoViewSet, basename='preenchimento')
+router.register(r'configuracoes-arm', ConfiguracaoArmazenamentoViewSet, basename='configuracao-arm')
+router.register(r'logs', LogDeAcaoViewSet, basename='log')
+router.register(r'configuracoes', ConfiguracaoViewSet, basename='configuracao')
+router.register(r'metas-mensais', MetaMensalViewSet, basename='meta-mensal')
 
 # -----------------------------
 # URL Patterns
@@ -57,8 +42,8 @@ urlpatterns = [
 
     # Relatórios
     path('relatorios/', RelatorioView.as_view(), name='relatorios'),
-    path('relatorios/pdf/', gerar_relatorio_pdf, name='relatorio-pdf'),
-    path('relatorios/excel/', gerar_relatorio_excel, name='relatorio-excel'),
+    path('relatorios/pdf/', relatorio_pdf, name='relatorio-pdf'),       # <- usa a view correta
+    path('relatorios/excel/', relatorio_excel, name='relatorio-excel'), # <- usa a view correta
 
     # Criação de Meta (não conflita com metas-mensais do router)
     path('metas/', MetaCreateView.as_view(), name='criar-meta'),

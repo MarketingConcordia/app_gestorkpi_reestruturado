@@ -31,6 +31,7 @@ class PreenchimentoSerializer(serializers.ModelSerializer):
             'meta', 'mes', 'ano',
             'comentario', 'arquivo', 'preenchido_por'
         ]
+        read_only_fields = ('id', 'data_preenchimento', 'preenchido_por')
 
     # ---- validações ----
     def validate_mes(self, v):
@@ -78,15 +79,19 @@ class PreenchimentoSerializer(serializers.ModelSerializer):
         except Exception:
             return float(obj.indicador.valor_meta) if obj.indicador and obj.indicador.valor_meta is not None else None
 
-
     def get_preenchido_por(self, obj):
-        if obj.preenchido_por:
-            return {
-                "id": obj.preenchido_por.id,
-                "first_name": obj.preenchido_por.first_name,
-                "username": obj.preenchido_por.username
-            }
-        return None
+        """
+        Mantém a chave 'username' por compatibilidade com o front,
+        mas usa o e-mail, pois o modelo de usuário não tem mais 'username'.
+        """
+        u = obj.preenchido_por
+        if not u:
+            return None
+        return {
+            "id": u.id,
+            "first_name": u.first_name,
+            "username": u.email  # compat: front continua lendo 'username'
+        }
 
 
 # =============================
@@ -101,3 +106,4 @@ class PreenchimentoHistoricoSerializer(serializers.ModelSerializer):
             'data_preenchimento', 'valor_realizado', 'comentario',
             'arquivo', 'mes', 'ano', 'tipo_valor'
         ]
+        read_only_fields = ('data_preenchimento',)

@@ -11,8 +11,12 @@ class LogDeAcaoSerializer(serializers.ModelSerializer):
     class Meta:
         model = LogDeAcao
         fields = ['id', 'usuario_nome', 'acao', 'data']
+        read_only_fields = ['id', 'usuario_nome', 'data']
 
     def get_usuario_nome(self, obj):
-        if obj.usuario:
-            return obj.usuario.first_name or obj.usuario.username
-        return "Usuário removido"
+        u = obj.usuario
+        if not u:
+            return "Usuário removido"
+        # Prioriza first_name; se vazio, cai para o e-mail
+        nome = (u.first_name or "").strip()
+        return nome if nome else (u.email or "Usuário")

@@ -19,6 +19,9 @@
         if (perfil !== 'master') {
             alert("Acesso negado. Esta página é exclusiva para o perfil Master.");
             window.location.href = 'indexgestores.html'; // ou login.html se preferir
+        } else {
+            // ✅ Deixe explícito para o JS que renderiza os botões
+            window.__isMaster = true;
         }
     </script>
 </head>
@@ -175,17 +178,20 @@
         </div>
     </div>
 
-    <!-- Modal de edição de uma única meta mensal -->
-    <div id="editar-meta-unica-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <!-- Modal de edição de META (alinhado ao JS atual) -->
+    <div id="editar-meta-modal" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
         <div class="bg-white rounded-lg shadow-lg p-6 w-[90%] max-w-md">
-            <h3 class="text-xl font-semibold mb-4 text-blue-800">Editar Meta do Mês</h3>
+            <h3 class="text-xl font-semibold mb-2 text-blue-800">Editar Meta do Mês</h3>
+            <p id="editar-meta-competencia" class="text-sm text-gray-500 mb-3">Competência: --/--</p>
+
             <div class="mb-4">
-                <label for="input-meta-unica" class="block text-sm font-medium text-gray-700 mb-1">Nova Meta:</label>
-                <input type="number" id="input-meta-unica" step="0.01" class="w-full border border-gray-300 rounded px-3 py-2" step="any">
+                <label for="campo-nova-meta" class="block text-sm font-medium text-gray-700 mb-1">Nova Meta:</label>
+                <input type="number" id="campo-nova-meta" step="0.01" class="w-full border border-gray-300 rounded px-3 py-2">
             </div>
+
             <div class="flex justify-end gap-2">
-                <button id="cancelar-meta-unica" class="px-4 py-2 rounded bg-gray-300 hover:bg-gray-400 text-sm">Cancelar</button>
-                <button id="salvar-meta-unica" class="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">Salvar</button>
+                <button id="cancelar-edicao-meta" class="px-4 py-2 rounded bg-gray-300 hover:bg-gray-400 text-sm">Cancelar</button>
+                <button id="salvar-meta" class="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">Salvar</button>
             </div>
         </div>
     </div>

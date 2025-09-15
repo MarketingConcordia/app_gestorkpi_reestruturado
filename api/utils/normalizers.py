@@ -1,5 +1,7 @@
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, datetime
 from rest_framework import serializers
+import re
 
 
 def parse_mes_inicial(v):
@@ -28,42 +30,92 @@ def parse_mes_inicial(v):
 
 def normalize_number(value, field_name="valor"):
     """
-    Normaliza número aceitando formatos como:
-      - "100", "100,5", "100.5", "1.234,56", "1,234.56"
-    Regra: o ÚLTIMO separador (',' ou '.') é o decimal; os demais são milhares.
-    Retorna float.
+    Normaliza número aceitando pt-BR e en-US e PRESERVANDO o sinal negativo.
+
+    Exemplos aceitos:
+      - "-1.234,56" -> -1234.56
+      - "-1234.56"  -> -1234.56
+      - "−1.234,56" (menos unicode) -> -1234.56
+      - "(1.234,56)" (notação contábil) -> -1234.56
+      - "R$ -1.234,56" -> -1234.56
+
+    Retorna float (mantém compatibilidade com o uso atual no serializer).
     """
-    if value in (None, ''):
+    if value in (None, ""):
         return None
 
-    s = str(value).strip().replace(' ', '')
-    last_comma = s.rfind(',')
-    last_dot = s.rfind('.')
-    dec_pos = max(last_comma, last_dot)
+    # Se já for numérico, apenas converte para float
+    if isinstance(value, (int, float)):
+        return float(value)
 
-    digits = ''.join(ch for ch in s if ch.isdigit())
+    s = str(value).strip()
+    if not s:
+        return None
 
-    if dec_pos == -1:
-        try:
-            return float(digits)
-        except Exception:
-            raise serializers.ValidationError(f"{field_name} deve ser numérico.")
+    # Notação contábil: (123,45) => -123,45
+    neg_parenteses = s.startswith("(") and s.endswith(")")
+    if neg_parenteses:
+        s = s[1:-1].strip()
 
-    after = ''.join(ch for ch in s[dec_pos + 1:] if ch.isdigit())
+    # Normaliza espaços e símbolos comuns de moeda
+    s = s.replace("R$", "").replace(" ", "")
 
-    if after == '':
-        try:
-            return float(digits)
-        except Exception:
-            raise serializers.ValidationError(f"{field_name} deve ser numérico.")
+    # Normaliza sinal unicode "−" (U+2212) para '-'
+    s = s.replace("\u2212", "-")
 
-    int_len = len(digits) - len(after)
-    if int_len <= 0:
-        num_str = "0." + digits.zfill(len(after))
+    # Captura sinal SOMENTE se estiver no início
+    is_negative = s.startswith("-")
+    if is_negative:
+        s = s[1:]
+
+    # Mantém apenas dígitos, vírgula e ponto
+    s = "".join(ch for ch in s if ch.isdigit() or ch in ",.")
+
+    # Determina o separador decimal:
+    # Se houver vírgula e ponto, a ÚLTIMA ocorrência decide o decimal
+    has_comma = "," in s
+    has_dot = "." in s
+    if has_comma and has_dot:
+        last_comma = s.rfind(",")
+        last_dot = s.rfind(".")
+        if last_comma > last_dot:
+            # vírgula é decimal: remove pontos de milhar e troca vírgula por ponto
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+        else:
+            # ponto é decimal: remove vírgulas de milhar
+            s = s.replace(",", "")
+    elif has_comma:
+        # só vírgula -> decimal
+        s = s.replace(".", "")  # ponto vira milhar
+        s = s.replace(",", ".")
     else:
-        num_str = digits[:int_len] + "." + digits[int_len:]
+        # só ponto ou nenhum -> mantém
+        pass
+
+    # Garante que só exista um ponto decimal
+    parts = s.split(".")
+    if len(parts) > 1:
+        int_part = "".join(parts[:-1])
+        frac_part = parts[-1]
+        s = f"{int_part}.{frac_part}"
+
+    # Validação final: precisa ter dígitos
+    if not s or not re.fullmatch(r"\d+(\.\d+)?", s):
+        # tenta remover lixo residual
+        s = re.sub(r"[^0-9.]", "", s)
+    if not s or not re.fullmatch(r"\d+(\.\d+)?", s):
+        raise serializers.ValidationError(f"{field_name} deve ser numérico.")
 
     try:
-        return float(num_str)
-    except Exception:
+        d = Decimal(s)  # NUNCA use float aqui
+    except InvalidOperation:
         raise serializers.ValidationError(f"{field_name} deve ser numérico.")
+
+    if is_negative or neg_parenteses:
+        d = -d
+
+    # quantiza para 2 casas por padrão (padrão do projeto)
+    q = Decimal('0.01')
+    d = d.quantize(q, rounding=ROUND_HALF_UP)
+    return d

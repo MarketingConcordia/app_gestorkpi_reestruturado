@@ -6,9 +6,11 @@ class SetorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Setor
         fields = '__all__'
+        read_only_fields = ('id',)
 
 
 class SetorSimplesSerializer(serializers.ModelSerializer):
     class Meta:
         model = Setor
         fields = ['id', 'nome']
+        read_only_fields = ('id',)

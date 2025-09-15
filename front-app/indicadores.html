@@ -141,7 +141,7 @@
               </div>
               <div>
                 <label for="metaMetrica" class="block text-sm font-medium text-gray-700">Meta *</label>
-                <input type="number" id="metaMetrica" step="0.01" name="metaMetrica" class="mt-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                <input type="text" id="metaMetrica" inputmode="decimal" pattern="^\d+(?:[,.]\d{0,2})?$" name="metaMetrica" class="mt-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
               </div>
               <div>
                 <label class="block text-sm font-medium text-gray-700">Tipo de Valor *</label>
@@ -171,8 +171,13 @@
                 </div>
 
                 <div>
-                <label for="mesInicial" class="block text-sm font-medium text-gray-700">Mês Inicial *</label>
-                <input type="month" id="mesInicial" name="mesInicial" class="mt-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                    <label for="mesInicial" class="block text-sm font-medium text-gray-700">Mês Inicial *</label>
+                    <input type="month" id="mesInicial" name="mesInicial" class="mt-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                </div>
+
+                <div>
+                    <label for="mesFinal" class="block text-sm font-medium text-gray-700">Mês Final</label>
+                    <input type="month" id="mesFinal" name="mesFinal" class="mt-1 w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
 
                 <div>
@@ -198,12 +203,23 @@
             <div class="flex-1">
                 <label for="filtro-setor" class="block text-sm font-medium text-gray-700">Filtrar por Setor</label>
                 <select id="filtro-setor" class="mt-1 w-full border rounded px-3 py-2">
-                    <option value="todos">Todos</option>
+                <option value="todos">Todos</option>
                 </select>
             </div>
+
             <div class="flex-1">
                 <label for="filtro-nome" class="block text-sm font-medium text-gray-700">Pesquisar por Nome</label>
                 <input type="text" id="filtro-nome" placeholder="Digite o nome do indicador..." class="mt-1 w-full border rounded px-3 py-2">
+            </div>
+
+            <!-- ⬇️ NOVO: filtro de status -->
+            <div class="w-48">
+                <label for="filtro-ativo" class="block text-sm font-medium text-gray-700">Status</label>
+                <select id="filtro-ativo" class="mt-1 w-full border rounded px-3 py-2">
+                <option value="todos">Todos</option>
+                <option value="ativos">Ativos</option>
+                <option value="inativos">Inativos</option>
+                </select>
             </div>
         </div>
 
@@ -227,6 +243,7 @@
                             <th class="text-left px-4 py-2">Visibilidade</th>
                             <th class="text-left px-4 py-2">Periodicidade</th>
                             <th class="text-left px-4 py-2">Mês Inicial</th>
+                            <th class="text-left px-4 py-2">Mês Final</th>
                             <th class="text-left px-4 py-2">Status</th>
                             <th class="text-left px-4 py-2">Ativo</th>
                             <th class="text-center px-4 py-2">Ações</th>
@@ -264,7 +281,7 @@
 
                 <div>
                     <label class="block text-sm font-medium">Meta Esperada:</label>
-                    <input type="number" id="edit-meta" step="0.01" class="w-full border rounded px-3 py-2" required>
+                    <input type="text" id="edit-meta" inputmode="decimal" pattern="^\d+(?:[,.]\d{0,2})?$" class="w-full border rounded px-3 py-2" required>
                 </div>
 
                 <div>
@@ -306,6 +323,11 @@
                 <div>
                     <label class="block text-sm font-medium">Mês Inicial:</label>
                     <input type="month" id="edit-mes-inicial" class="w-full border rounded px-3 py-2" required>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium">Mês Final:</label>
+                    <input type="month" id="edit-mes-final" class="w-full border rounded px-3 py-2">
                 </div>
 
                 <div>

@@ -1,3 +1,8 @@
+// Mapa global: indicador_id -> tipo_valor ('monetario' | 'percentual' | 'numeral')
+const tipoPorIndicador = new Map();
+
+window.__indicadoresPermitidos = new Set();
+
 // === ESTADO GERAL E SEGURANÇA DE ACESSO ===
 document.addEventListener("DOMContentLoaded", () => {
     const perfil = localStorage.getItem("perfil_usuario");
@@ -37,11 +42,21 @@ function preencherIndicadoresGestor() {
     .then(data => {
         // Limpa e preenche o select
         select.innerHTML = `<option value="">Todos os indicadores</option>`;
+
+        // zera e povoa o conjunto permitido
+        window.__indicadoresPermitidos.clear();
+
         data.forEach(indicador => {
             const opt = document.createElement("option");
             opt.value = indicador.id;
             opt.textContent = indicador.nome;
             select.appendChild(opt);
+
+            // tipo
+            tipoPorIndicador.set(indicador.id, indicador.tipo_valor || 'numeral');
+
+            // ✅ registra como permitido para este gestor
+            window.__indicadoresPermitidos.add(indicador.id);
         });
     })
     .catch(err => {
@@ -109,10 +124,14 @@ function carregarPreenchimentos() {
         const data = JSON.parse(text);
         const preenchimentos = Array.isArray(data) ? data : data.results || [];
 
-        // 🔎 Filtro por setor apenas se estiver em "Todos"
+        // ✅ 1º: mantém só os indicadores permitidos do gestor
+        const permitidos = window.__indicadoresPermitidos || new Set();
+        const soDoGestor = preenchimentos.filter(p => permitidos.has(p.indicador));
+
+        // ✅ 2º: se um indicador específico foi selecionado, filtra por ele também
         const preenchimentosFiltrados = indicadorId
-            ? preenchimentos.filter(p => p.indicador === parseInt(indicadorId))
-            : preenchimentos;
+        ? soDoGestor.filter(p => p.indicador === parseInt(indicadorId))
+        : soDoGestor;
 
         aplicarFiltros(preenchimentosFiltrados);
     })
@@ -156,7 +175,10 @@ function aplicarFiltros(preenchimentos) {
             condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Não atingida";
         }
 
-        return condIndicador && condDataInicial && condDataFinal && condStatus;
+        // ✅ reforço: só passa se o indicador pertencer ao gestor
+        const condGestor = !window.__indicadoresPermitidos || window.__indicadoresPermitidos.has(p.indicador);
+
+        return condIndicador && condDataInicial && condDataFinal && condStatus && condGestor;
     });
 
     renderizarHistorico(filtrados);
@@ -182,8 +204,10 @@ function renderizarHistorico(preenchimentos) {
 
         dadosAgrupados[p.indicador_nome][chaveMes] = {
             valor: p.valor_realizado,
-            meta: p.meta,
-            status: calcularStatus(p.valor_realizado, p.meta ?? 0, p.tipo_meta)
+            meta:  p.meta,
+            status: calcularStatus(p.valor_realizado, p.meta ?? 0, p.tipo_meta),
+            // ✅ tenta pegar do próprio preenchimento; se não vier, usa o mapa global pelo id
+            tipo_valor: p.tipo_valor ?? tipoPorIndicador.get(p.indicador) ?? 'numeral'
         };
     });
 
@@ -215,8 +239,8 @@ function renderizarHistorico(preenchimentos) {
                               dados.status === "Não atingida" ? "❌" : "📊";
 
                 row += `
-                    <td class="px-4 py-2 border-l border-gray-300">${formatarValor(dados.valor)}</td>
-                    <td class="px-4 py-2">${formatarValor(dados.meta)}</td>
+                    <td class="px-4 py-2 border-l border-gray-300">${formatarValor(dados.valor, dados.tipo_valor)}</td>
+                    <td class="px-4 py-2">${formatarValor(dados.meta,  dados.tipo_valor)}</td>
                     <td class="px-4 py-2 ${corStatus}">${icone} ${dados.status}</td>
                 `;
             } else {
@@ -245,9 +269,62 @@ function mesPtBr(mes) {
     return nomes[mes] || mes;
 }
 
-function formatarValor(valor) {
-    if (valor == null) return "—";
-    return Number(valor).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+// ==== Helpers de formatação ====
+function normalizarNumeroUniversal(input) {
+  if (input == null) return null;
+  let s = String(input).trim().replace(/\s/g, "");
+  if (!s) return null;
+
+  const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
+  const decPos = Math.max(lastComma, lastDot);
+  const digits = s.replace(/[^\d]/g, "");
+  if (!digits) return null;
+
+  let canon;
+  if (decPos >= 0) {
+    const after = s.slice(decPos + 1).replace(/[^\d]/g, "");
+    if (!after.length) {
+      canon = digits;
+    } else {
+      const intLen = digits.length - after.length;
+      canon = (intLen <= 0)
+        ? ("0." + digits.padStart(after.length, "0"))
+        : (digits.slice(0, intLen) + "." + digits.slice(intLen));
+    }
+  } else {
+    canon = digits;
+  }
+
+  const n = Number(canon);
+  return Number.isFinite(n) ? canon : null;
+}
+
+function resolveTipoValor(tipo) {
+  const t = String(tipo || '').trim().toLowerCase();
+  if (['monetario','monetário','currency','money'].includes(t)) return 'monetario';
+  if (['percentual','percent','percentage','%'].includes(t))     return 'percentual';
+  return 'numeral';
+}
+
+// ==== Formatação final, respeitando o tipo ====
+function formatarValor(valor, tipo_valor) {
+  if (valor == null || valor === '') return "—";
+  const canon = normalizarNumeroUniversal(valor);
+  if (canon === null) return "—";
+
+  const n = Number(canon);
+  const tipo = resolveTipoValor(tipo_valor);
+
+  if (tipo === 'monetario') {
+    return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
+  }
+  if (tipo === 'percentual') {
+    // 👉 Ajuste esta convenção se sua API enviar 0.15 para 15%:
+    const shown = n; // use: const shown = n * 100;  // se a API enviar 0.15 para 15%
+    return shown.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) + "%";
+  }
+  // numeral
+  return n.toLocaleString("pt-BR", { minimumFractionDigits: 2 });
 }
 
 // === EXPORTAÇÃO PARA EXCEL ===

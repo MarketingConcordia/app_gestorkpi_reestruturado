@@ -1,4 +1,6 @@
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
+from django.db.models import Q
 
 
 # ======================
@@ -16,6 +18,7 @@ class ConfiguracaoArmazenamento(models.Model):
 
     dia_limite_preenchimento = models.PositiveSmallIntegerField(
         default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
         verbose_name="Dia limite para preenchimento",
         help_text="Apenas até esse dia do mês os gestores poderão preencher indicadores."
     )
@@ -38,8 +41,60 @@ class ConfiguracaoArmazenamento(models.Model):
 
     criado_em = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        verbose_name = "Configuração de Armazenamento"
+        verbose_name_plural = "Configurações de Armazenamento"
+        ordering = ('-criado_em',)
+        # 🔐 Uma única configuração ativa por vez (PostgreSQL dá suporte a índice parcial)
+        constraints = [
+            models.CheckConstraint(
+                check=Q(dia_limite_preenchimento__gte=1) & Q(dia_limite_preenchimento__lte=31),
+                name='ck_config_arm_dia_limite_1_31'
+            ),
+            models.UniqueConstraint(
+                fields=['ativo'],
+                condition=Q(ativo=True),
+                name='uq_config_arm_uma_ativa'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['ativo'], name='idx_config_arm_ativo'),
+            models.Index(fields=['tipo'], name='idx_config_arm_tipo'),
+        ]
+
     def __str__(self):
         return f"Armazenamento: {self.tipo}"
+
+    def clean(self):
+        """
+        Valida obrigatoriedade de credenciais de acordo com o 'tipo'.
+        Observação: chame full_clean() no serializer antes de salvar.
+        """
+        tipo = self.tipo
+        errors = {}
+
+        if tipo == 'aws':
+            required = {
+                'aws_access_key': self.aws_access_key,
+                'aws_secret_key': self.aws_secret_key,
+                'aws_bucket_name': self.aws_bucket_name,
+                'aws_region': self.aws_region,
+            }
+            faltando = [k for k, v in required.items() if not v]
+            if faltando:
+                errors['aws'] = f"Campos obrigatórios ausentes para AWS: {', '.join(faltando)}"
+
+        elif tipo == 'azure':
+            if not self.azure_connection_string or not self.azure_container:
+                errors['azure'] = "Campos obrigatórios para Azure: azure_connection_string e azure_container."
+
+        elif tipo == 'gcp':
+            if not self.gcp_credentials_json or not self.gcp_bucket_name:
+                errors['gcp'] = "Campos obrigatórios para GCP: gcp_credentials_json e gcp_bucket_name."
+
+        if errors:
+            from django.core.exceptions import ValidationError
+            raise ValidationError(errors)
 
 
 # ======================
@@ -54,11 +109,29 @@ class ConfiguracaoNotificacao(models.Model):
 
     nome = models.CharField(max_length=100)
     mensagem = models.TextField()
-    dia_do_mes = models.IntegerField()
+    dia_do_mes = models.IntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+        help_text="Dia do mês em que a notificação será disparada."
+    )
     repetir_todo_mes = models.BooleanField(default=True)
     destinatarios = models.CharField(max_length=10, choices=DESTINATARIOS)
     ativo = models.BooleanField(default=True)
     criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Configuração de Notificação"
+        verbose_name_plural = "Configurações de Notificação"
+        ordering = ('-criado_em',)
+        constraints = [
+            models.CheckConstraint(
+                check=Q(dia_do_mes__gte=1) & Q(dia_do_mes__lte=31),
+                name='ck_config_notif_dia_1_31'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['ativo'], name='idx_config_notif_ativo'),
+            models.Index(fields=['dia_do_mes'], name='idx_config_notif_dia'),
+        ]
 
     def __str__(self):
         return f"{self.nome} - Dia {self.dia_do_mes}"
@@ -68,7 +141,15 @@ class ConfiguracaoNotificacao(models.Model):
 # 🔹 CONFIGURAÇÃO DE PREENCHIMENTO
 # ======================
 class Configuracao(models.Model):
-    dia_limite_preenchimento = models.PositiveIntegerField(default=10)
+    dia_limite_preenchimento = models.PositiveIntegerField(
+        default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+        help_text="Até esse dia os gestores podem preencher indicadores."
+    )
+
+    class Meta:
+        verbose_name = "Configuração de Preenchimento"
+        verbose_name_plural = "Configurações de Preenchimento"
 
     def __str__(self):
         return f"Dia limite: {self.dia_limite_preenchimento}"

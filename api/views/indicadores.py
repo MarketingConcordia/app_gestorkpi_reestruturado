@@ -1,8 +1,8 @@
-from datetime import datetime, date
-from dateutil.relativedelta import relativedelta
-from django.utils.timezone import make_aware
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
+from django.conf import settings
+import logging, traceback
 
 from rest_framework import viewsets, generics, serializers, status
 from rest_framework.decorators import action
@@ -10,8 +10,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
+from rest_framework.permissions import IsAuthenticated
 
-from api.models import Indicador, Preenchimento, Meta, MetaMensal
+from api.models import Indicador, Preenchimento, Meta, MetaMensal, PermissaoIndicador
 from api.serializers import (
     IndicadorSerializer,
     MetaSerializer,
@@ -19,25 +20,112 @@ from api.serializers import (
 )
 from api.utils import registrar_log
 from api.permissions import IsMasterUser, HasIndicadorPermission
-from rest_framework.permissions import IsAuthenticated
 
+logger = logging.getLogger(__name__)
+
+# -------------------------
+# Helpers seguros
+# -------------------------
+def _to_float(v):
+    from decimal import Decimal
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        try:
+            return float(v)
+        except Exception:
+            return None
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+def _to_iso(dt):
+    if not dt:
+        return None
+    try:
+        return dt.isoformat()
+    except Exception:
+        return str(dt)
+
+def _ts_or_0(dt):
+    if not dt:
+        return 0.0
+    try:
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt, timezone.get_current_timezone())
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+def _ym_key(d):  # YYYY-MM
+    try:
+        return d.strftime("%Y-%m")
+    except Exception:
+        return None
+
+def _ymd(d):     # YYYY-MM-DD
+    try:
+        return d.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+def _safe_file_url(request, fieldfile):
+    """
+    Retorna uma URL segura para o arquivo:
+    - tenta fieldfile.url → absoluto
+    - fallback para str(fieldfile) se for uma URL http/https
+    - caso contrário, None
+    NUNCA levanta exceção.
+    """
+    if not fieldfile:
+        return None
+    # 1) Tenta .url
+    try:
+        url = fieldfile.url
+        # se vier relativo, torna absoluto
+        try:
+            return request.build_absolute_uri(url)
+        except Exception:
+            return url
+    except Exception:
+        pass
+    # 2) Fallback: nome bruto pode ser uma URL completa se você salvou string
+    try:
+        raw = str(fieldfile)
+        if raw and (raw.startswith("http://") or raw.startswith("https://")):
+            return raw
+    except Exception:
+        pass
+    return None
 
 
 # =========================
 #       INDICADORES
 # =========================
 class IndicadorViewSet(viewsets.ModelViewSet):
-    queryset = Indicador.objects.all().select_related('setor')
     serializer_class = IndicadorSerializer
-    permission_classes = [IsAuthenticated, HasIndicadorPermission]  # 🔒 apenas Master ou gestores com permissão
+    permission_classes = [IsAuthenticated, HasIndicadorPermission]
 
     def get_queryset(self):
         usuario = self.request.user
-        qs = Indicador.objects.all().select_related('setor')
+        qs = (
+            Indicador.objects
+            .select_related('setor')
+        )
 
-        if usuario.perfil != 'master':
-            qs = qs.filter(Q(visibilidade=True) | Q(setor__in=usuario.setores.all()))
+        if getattr(usuario, "perfil", None) != 'master':
+            ids_perm_manuais = PermissaoIndicador.objects.filter(
+                usuario=usuario
+            ).values_list('indicador_id', flat=True)
 
+            qs = qs.filter(
+                Q(setor__in=usuario.setores.all()) |
+                Q(visibilidade=True) |
+                Q(id__in=ids_perm_manuais)
+            ).distinct()
+
+        # ---- filtros opcionais ----
         somente_preenchidos = self.request.query_params.get('somente_preenchidos')
         apenas_meus = self.request.query_params.get('apenas_meus')
         mes = self.request.query_params.get('mes')
@@ -61,16 +149,15 @@ class IndicadorViewSet(viewsets.ModelViewSet):
             ids = pchs.values_list('indicador_id', flat=True).distinct()
             qs = qs.filter(id__in=ids)
 
-        return qs
-    
+        # ✅ Prefetch consistente
+        return qs.prefetch_related('metas_mensais', 'preenchimentos')
+
     @action(detail=False, methods=['get'], url_path='meus')
     def meus_indicadores(self, request):
         user = request.user
         qs = self.get_queryset()
-
         if user.perfil == "gestor":
             qs = qs.filter(setor__in=user.setores.all())
-
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
@@ -88,6 +175,7 @@ class IndicadorViewSet(viewsets.ModelViewSet):
         except serializers.ValidationError:
             raise
         except Exception as e:
+            logger.exception("Falha ao criar indicador")
             return Response({"detail": f"Falha ao criar indicador: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
     @transaction.atomic
@@ -95,32 +183,9 @@ class IndicadorViewSet(viewsets.ModelViewSet):
         parcial = kwargs.pop('partial', False)
         indicador = self.get_object()
         nome_anterior = indicador.nome
-
         serializer = self.get_serializer(indicador, data=request.data, partial=parcial)
         serializer.is_valid(raise_exception=True)
         indicador_atualizado = serializer.save()
-
-        nova_meta = indicador_atualizado.valor_meta
-        periodicidade = indicador_atualizado.periodicidade or 12
-        hoje = datetime.today().replace(day=1)
-
-        for i in range(periodicidade):
-            mes_alvo = (hoje + relativedelta(months=i)).date()
-            ja_preenchido = Preenchimento.objects.filter(
-                indicador=indicador_atualizado,
-                data_preenchimento__year=mes_alvo.year,
-                data_preenchimento__month=mes_alvo.month,
-                valor_realizado__isnull=False
-            ).exists()
-            if ja_preenchido:
-                continue
-
-            MetaMensal.objects.update_or_create(
-                indicador=indicador_atualizado,
-                mes=mes_alvo,
-                defaults={'valor_meta': nova_meta}
-            )
-
         registrar_log(request.user, f"Editou o indicador '{nome_anterior}'")
         indicador_atualizado = Indicador.objects.select_related('setor').get(pk=indicador_atualizado.pk)
         return Response(self.get_serializer(indicador_atualizado).data)
@@ -132,35 +197,6 @@ class IndicadorViewSet(viewsets.ModelViewSet):
         registrar_log(request.user, f"Excluiu o indicador '{nome}'")
         return Response({"detail": "Indicador excluído com sucesso."}, status=status.HTTP_204_NO_CONTENT)
 
-    def perform_create(self, serializer):
-        indicador = serializer.save()
-        gerar_preenchimentos_retroativos(indicador)
-
-
-def gerar_preenchimentos_retroativos(indicador: Indicador):
-    hoje = date.today()
-    if not indicador.mes_inicial:
-        return
-
-    data_iterada = indicador.mes_inicial.replace(day=1)
-    periodicidade = indicador.periodicidade or 1
-    pendentes = []
-
-    while data_iterada <= hoje.replace(day=1):
-        pendentes.append(
-            Preenchimento(
-                indicador=indicador,
-                data_preenchimento=make_aware(datetime(data_iterada.year, data_iterada.month, 1, 0, 0, 0)),
-                mes=data_iterada.month,
-                ano=data_iterada.year,
-                valor_realizado=0,
-            )
-        )
-        data_iterada += relativedelta(months=periodicidade)
-
-    if pendentes:
-        Preenchimento.objects.bulk_create(pendentes, ignore_conflicts=True)
-
 
 # =========================
 #   CONSOLIDADO / CARDS
@@ -169,119 +205,158 @@ class IndicadoresConsolidadosView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        usuario = request.user
+        try:
+            usuario = request.user
 
-        # 🔹 Busca otimizada: setor (FK) + metas_mensais + preenchimentos
-        qs_ind = (
-            Indicador.objects
-            .select_related("setor")
-            .prefetch_related(
-                "metas_mensais",
-                "preenchimento_set",  # usa related_name default
-            )
-        )
-
-        if usuario.perfil == "gestor":
-            qs_ind = qs_ind.filter(
-                Q(setor__in=usuario.setores.all()) |
-                Q(visibilidade=True) |
-                Q(visibilidade__iexact="true") |   # se for CharField
-                Q(visibilidade__iexact="1")        # se for string numérica
+            qs_ind = (
+                Indicador.objects
+                .select_related("setor")
+                .prefetch_related("metas_mensais", "preenchimentos")
             )
 
-        dados = []
-        for indicador in qs_ind:
-            # 🔹 Último preenchimento já carregado (sem query extra)
-            preenchimentos = sorted(indicador.preenchimento_set.all(), key=lambda p: p.data_preenchimento)
-            ultimo = preenchimentos[-1] if preenchimentos else None
+            if getattr(usuario, "perfil", None) == "gestor":
+                ids_perm_manuais = PermissaoIndicador.objects.filter(
+                    usuario=usuario
+                ).values_list("indicador_id", flat=True)
 
-            valor_atual = None
-            atingido = False
-            variacao = 0
-            ultima_atualizacao = None
-            responsavel = "—"
-            comentarios = ""
-            origem = ""
-            provas = []
-            valor_meta = indicador.valor_meta
+                qs_ind = qs_ind.filter(
+                    Q(setor__in=usuario.setores.all()) |
+                    Q(visibilidade=True) |
+                    Q(id__in=ids_perm_manuais)
+                ).distinct()
 
-            metas_dict = {m.mes.strftime("%Y-%m"): m.valor_meta for m in indicador.metas_mensais.all()}
+            dados = []
 
-            if ultimo:
-                valor_atual = ultimo.valor_realizado
-                ultima_atualizacao = ultimo.data_preenchimento
+            for indicador in qs_ind:
+                try:
+                    # Ordenação segura
+                    preenchimentos = sorted(
+                        indicador.preenchimentos.all(),  # 👈 related_name correto
+                        key=lambda p: _ts_or_0(p.data_preenchimento)
+                    )
+                    ultimo = preenchimentos[-1] if preenchimentos else None
 
-                if ultimo.preenchido_por:
-                    responsavel = ultimo.preenchido_por.first_name or ultimo.preenchido_por.email
+                    # metas_dict (ignora None)
+                    metas_dict = {}
+                    for m in indicador.metas_mensais.all():
+                        k = _ym_key(getattr(m, "mes", None))
+                        if k:
+                            metas_dict[k] = _to_float(m.valor_meta)
 
-                comentarios = ultimo.comentario or ""
-                origem = ultimo.origem or ""
-                if ultimo.arquivo:
-                    try:
-                        provas = [request.build_absolute_uri(ultimo.arquivo.url)]
-                    except Exception:
-                        provas = [str(ultimo.arquivo)]
+                    valor_atual = None
+                    atingido = False
+                    variacao = 0.0
+                    ultima_atualizacao = None
+                    responsavel = "—"
+                    comentarios = ""
+                    origem = ""
+                    provas = []
+                    valor_meta_atual = _to_float(indicador.valor_meta)
 
-                chave_meta = f"{ultimo.ano}-{str(ultimo.mes).zfill(2)}"
-                valor_meta = metas_dict.get(chave_meta, indicador.valor_meta)
+                    if ultimo:
+                        valor_atual = _to_float(ultimo.valor_realizado)
+                        ultima_atualizacao = ultimo.data_preenchimento
 
-            if valor_atual is not None and valor_meta is not None:
-                if indicador.tipo_meta == "crescente":
-                    atingido = valor_atual >= valor_meta
-                elif indicador.tipo_meta == "decrescente":
-                    atingido = valor_atual <= valor_meta
-                elif indicador.tipo_meta == "monitoramento":
-                    atingido = abs(valor_atual - valor_meta) <= 5
-                variacao = ((valor_atual - valor_meta) / valor_meta) * 100 if valor_meta else 0
+                        if ultimo.preenchido_por:
+                            responsavel = ultimo.preenchido_por.first_name or ultimo.preenchido_por.email
 
-            # 🔹 Histórico sem N+1
-            historico = []
-            for p in preenchimentos:
-                chave_meta = f"{p.ano}-{str(p.mes).zfill(2)}"
-                meta_val = metas_dict.get(chave_meta, indicador.valor_meta)
-                arq_url = None
-                if p.arquivo:
-                    try:
-                        arq_url = request.build_absolute_uri(p.arquivo.url)
-                    except Exception:
-                        arq_url = str(p.arquivo)
-                historico.append({
-                    "id": p.id,
-                    "valor_realizado": p.valor_realizado,
-                    "data_preenchimento": p.data_preenchimento,
-                    "comentario": p.comentario,
-                    "origem": getattr(p, "origem", "") or "",
-                    "arquivo": arq_url,
-                    "mes": p.mes,
-                    "ano": p.ano,
-                    "meta": meta_val,
-                })
+                        comentarios = ultimo.comentario or ""
+                        origem = ultimo.origem or ""
 
-            dados.append({
-                "id": indicador.id,
-                "nome": indicador.nome,
-                "setor_nome": indicador.setor.nome if indicador.setor else "—",
-                "setor": indicador.setor_id,
-                "tipo_meta": indicador.tipo_meta,
-                "tipo_valor": indicador.tipo_valor,
-                "ativo": indicador.ativo,
-                "valor_atual": valor_atual,
-                "valor_meta": valor_meta,
-                "atingido": atingido,
-                "variacao": variacao,
-                "responsavel": responsavel,
-                "ultimaAtualizacao": ultima_atualizacao,
-                "comentarios": comentarios,
-                "origem": origem,
-                "provas": provas,
-                "historico": historico,
-                "metas_mensais": [
-                    {"mes": m.mes, "valor_meta": m.valor_meta}
-                    for m in indicador.metas_mensais.all().order_by("mes")
-                ],
-            })
+                        # Provas seguras
+                        arq = _safe_file_url(request, getattr(ultimo, "arquivo", None))
+                        if arq:
+                            provas.append(arq)
+                        if origem and str(origem).startswith(("http://", "https://")):
+                            provas.append(origem)
 
-        return Response(dados)
+                        chave_meta = f"{ultimo.ano}-{str(ultimo.mes).zfill(2)}"
+                        valor_meta_atual = metas_dict.get(chave_meta, valor_meta_atual)
+
+                    v_atual = _to_float(valor_atual)
+                    v_meta = _to_float(valor_meta_atual)
+
+                    if v_atual is not None and v_meta not in (None, 0):
+                        if indicador.tipo_meta == "crescente":
+                            atingido = v_atual >= v_meta
+                        elif indicador.tipo_meta == "decrescente":
+                            atingido = v_atual <= v_meta
+                        elif indicador.tipo_meta == "monitoramento":
+                            atingido = abs(v_atual - v_meta) <= 5
+                        try:
+                            variacao = round(((v_atual - v_meta) / v_meta) * 100, 2)
+                        except Exception:
+                            variacao = 0.0
+
+                    historico = []
+                    for p in preenchimentos:
+                        try:
+                            chave_meta = f"{p.ano}-{str(p.mes).zfill(2)}"
+                            meta_val = metas_dict.get(chave_meta, _to_float(indicador.valor_meta))
+
+                            arq_url = _safe_file_url(request, getattr(p, "arquivo", None))
+                            urls_provas = []
+                            if arq_url:
+                                urls_provas.append(arq_url)
+                            if getattr(p, "origem", "") and str(p.origem).startswith(("http://", "https://")):
+                                urls_provas.append(p.origem)
+
+                            historico.append({
+                                "id": p.id,
+                                "valor_realizado": _to_float(p.valor_realizado),
+                                "data_preenchimento": _to_iso(p.data_preenchimento),
+                                "comentario": p.comentario,
+                                "origem": getattr(p, "origem", "") or "",
+                                "arquivo": arq_url,
+                                "mes": p.mes,
+                                "ano": p.ano,
+                                "meta": _to_float(meta_val),
+                                "provas": urls_provas,
+                            })
+                        except Exception:
+                            logger.exception("Falha ao montar histórico (preenchimento id=%s)", getattr(p, "id", None))
+                            continue
+
+                    dados.append({
+                        "id": indicador.id,
+                        "nome": indicador.nome,
+                        "setor_nome": indicador.setor.nome if indicador.setor else "—",
+                        "setor": indicador.setor_id,
+                        "tipo_meta": indicador.tipo_meta,
+                        "tipo_valor": indicador.tipo_valor,
+                        "ativo": indicador.ativo,
+                        "valor_atual": _to_float(valor_atual),
+                        "valor_meta": _to_float(valor_meta_atual),
+                        "atingido": bool(atingido),
+                        "variacao": _to_float(variacao) or 0.0,
+                        "responsavel": responsavel,
+                        "ultimaAtualizacao": _to_iso(ultima_atualizacao),
+                        "comentarios": comentarios,
+                        "origem": origem,
+                        "provas": provas,
+                        "historico": historico,
+                        "metas_mensais": [
+                            {"mes": _ymd(getattr(m, "mes", None)), "valor_meta": _to_float(m.valor_meta)}
+                            for m in indicador.metas_mensais.all().order_by("mes")
+                            if _ymd(getattr(m, "mes", None))
+                        ],
+                    })
+
+                except Exception:
+                    logger.exception("Falha ao consolidar indicador id=%s", getattr(indicador, "id", None))
+                    continue  # não derruba o endpoint por 1 indicador
+
+            return Response(dados)
+
+        except Exception as e:
+            # Se algo escapar acima, garantimos JSON (não HTML) e logamos a stack
+            logger.error("Erro em dados-consolidados: %s", e, exc_info=True)
+            if settings.DEBUG:
+                return Response(
+                    {"detail": str(e), "trace": traceback.format_exc() },
+                    status=500
+                )
+            return Response({"detail": "Erro interno ao consolidar indicadores."}, status=500)
 
 
 # =========================
@@ -293,8 +368,7 @@ class IndicadorListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsMasterUser]  # 🔒 Apenas Master pode criar
 
     def perform_create(self, serializer):
-        ind = serializer.save()
-        gerar_preenchimentos_retroativos(ind)
+        serializer.save()
 
 
 class MetaCreateView(generics.CreateAPIView):

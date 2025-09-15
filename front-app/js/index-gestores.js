@@ -936,16 +936,18 @@ function aplicarFiltros() {
 
   let dadosFiltradosTemporarios = [...indicadoresComValoresGlobais];
 
+  // Filtro por setor
   if (setorSelecionado !== 'todos') {
-    const alvo = normalizarTexto(setorSelecionado);
+    const alvo = setorSelecionado.toLowerCase();
     dadosFiltradosTemporarios = dadosFiltradosTemporarios.filter(ind => {
-      const nomeNorm = normalizarTexto(ind.setor_nome);
-      return nomeNorm.includes(alvo);
+      const slug = (ind.setor_nome || '').toLowerCase().replace(/\s+/g, '-');
+      return slug === alvo;
     });
   }
 
   let indicadoresParaRenderizar = [];
 
+  // Filtros de período (ano/mês)
   dadosFiltradosTemporarios.forEach(indicadorOriginal => {
     let valorNoPeriodo = null;
     let metaNoPeriodo = parseFloat(indicadorOriginal.valor_meta);
@@ -956,14 +958,12 @@ function aplicarFiltros() {
     let variacaoNoPeriodo = indicadorOriginal.variacao;
 
     if (mesSelecionado === 'mes-atual' || (anoSelecionado === 'todos' && mesSelecionado === 'todos')) {
+      // Usa o último valor
       valorNoPeriodo = indicadorOriginal.valor_atual;
       metaNoPeriodo = parseFloat(indicadorOriginal.valor_meta);
       ultimaAtualizacaoNoPeriodo = indicadorOriginal.ultimaAtualizacao;
-      comentariosNoPeriodo = indicadorOriginal.comentarios;
-      provasNoPeriodo = indicadorOriginal.provas;
-      responsavelNoPeriodo = indicadorOriginal.responsavel;
-      variacaoNoPeriodo = indicadorOriginal.variacao;
     } else {
+      // Busca no histórico o valor do período selecionado
       const preenchimentoDoPeriodo = (indicadorOriginal.historico || [])
         .filter(item => {
           const itemYear = String(item.data).slice(0,4);
@@ -1006,6 +1006,7 @@ function aplicarFiltros() {
     indicadoresParaRenderizar.push(indicadorPeriodo);
   });
 
+  // Filtro por status
   if (statusSelecionado !== 'todos') {
     indicadoresParaRenderizar = indicadoresParaRenderizar.filter(ind => {
       if (statusSelecionado === 'atingidos') return ind.atingido === true;
@@ -1014,6 +1015,7 @@ function aplicarFiltros() {
     });
   }
 
+  // Render final com paginação
   renderComPaginacao(indicadoresParaRenderizar);
 }
 
