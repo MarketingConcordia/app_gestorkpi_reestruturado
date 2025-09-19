@@ -96,20 +96,27 @@ async function carregarSetores() {
 
     const data = await response.json().catch(() => ({}));
     const setores = (data && (data.results || data)) || [];
-    console.log("Setores recebidos:", setores);
 
-    const selectSetor = document.getElementById('setorMetrica');
-    const filtroSetor = document.getElementById('filtro-setor');
-    const editSelectSetor = document.getElementById('edit-setor');
+    // Índice global p/ consulta no modal (inclui inativos)
+    window._setoresIndex = new Map(
+      setores.map(s => [String(s.id), s])
+    );
 
-    if (selectSetor) selectSetor.innerHTML = '<option value="">Selecione</option>';
-    if (filtroSetor) filtroSetor.innerHTML = '<option value="todos">Todos</option>';
+    // Somente ativos para preencher selects (cadastro/filtro)
+    const ativos = setores.filter(s => s.ativo);
+
+    const selectSetor      = document.getElementById('setorMetrica');
+    const filtroSetor      = document.getElementById('filtro-setor');
+    const editSelectSetor  = document.getElementById('edit-setor');
+
+    if (selectSetor)     selectSetor.innerHTML     = '<option value="">Selecione</option>';
+    if (filtroSetor)     filtroSetor.innerHTML     = '<option value="todos">Todos</option>';
     if (editSelectSetor) editSelectSetor.innerHTML = '<option value="">Selecione</option>';
 
-    setores.forEach(setor => {
-      if (selectSetor) selectSetor.appendChild(new Option(setor.nome, setor.id));
-      if (filtroSetor) filtroSetor.appendChild(new Option(setor.nome, setor.id));
-      if (editSelectSetor) editSelectSetor.appendChild(new Option(setor.nome, setor.id));
+    ativos.forEach(s => {
+      if (selectSetor)     selectSetor.appendChild(new Option(s.nome, s.id));
+      if (filtroSetor)     filtroSetor.appendChild(new Option(s.nome, s.id));
+      if (editSelectSetor) editSelectSetor.appendChild(new Option(s.nome, s.id));
     });
   } catch (error) {
     console.error("Erro ao carregar setores:", error);
@@ -164,21 +171,15 @@ async function carregarIndicadores() {
 function getIndicadoresFiltrados() {
   const filtroSetorEl = document.getElementById('filtro-setor');
   const filtroNomeEl  = document.getElementById('filtro-nome');
-  const filtroAtivoEl = document.getElementById('filtro-ativo');
 
   const filtroSetor = filtroSetorEl ? filtroSetorEl.value : 'todos';
   const filtroNome  = (filtroNomeEl ? filtroNomeEl.value : '').toLowerCase();
-  const filtroAtivo = filtroAtivoEl ? filtroAtivoEl.value : 'todos'; // 'todos' | 'ativos' | 'inativos'
 
   const filtrados = todosIndicadores
     .filter(i =>
+      i.ativo === true && // << só ativos
       (filtroSetor === 'todos' || String(i.setor) === String(filtroSetor)) &&
-      i.nome.toLowerCase().includes(filtroNome) &&
-      (
-        filtroAtivo === 'todos' ||
-        (filtroAtivo === 'ativos'   && i.ativo === true) ||
-        (filtroAtivo === 'inativos' && i.ativo === false)
-      )
+      i.nome.toLowerCase().includes(filtroNome)
     )
     .sort((a, b) => ((a.status || '').toLowerCase() === 'pendente' ? -1 : 1));
 
@@ -645,7 +646,20 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('filtro-setor')?.addEventListener('change', renderizarIndicadores);
   document.getElementById('form-metrica')?.addEventListener('submit', salvarIndicador);
   document.getElementById('filtro-nome')?.addEventListener('input', renderizarIndicadores);
-  document.getElementById('filtro-ativo')?.addEventListener('change', renderizarIndicadores); // ⬅️ novo
+
+  // Drawer: abrir/fechar
+  const btnOpen   = document.getElementById('btn-toggle-inativos-indicadores');
+  const btnClose  = document.getElementById('btn-close-inativos-indicadores');
+  const backdrop  = document.getElementById('drawer-backdrop-indicadores');
+
+  btnOpen?.addEventListener('click', abrirDrawerIndicadoresInativos);
+  btnClose?.addEventListener('click', fecharDrawerIndicadoresInativos);
+  backdrop?.addEventListener('click', fecharDrawerIndicadoresInativos);
+
+  // Fecha com ESC
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') fecharDrawerIndicadoresInativos();
+  });
 });
 
 /* =========================
@@ -665,6 +679,68 @@ document.getElementById('tipo_meta')?.addEventListener('change', () => {
     if (campoMeta.value === '0') campoMeta.value = '';
   }
 });
+
+// === Drawer: Indicadores Inativos ===
+function abrirDrawerIndicadoresInativos() {
+  const root  = document.getElementById('drawer-inativos-indicadores');
+  const panel = document.getElementById('drawer-panel-indicadores');
+  if (!root || !panel) return;
+  root.classList.remove('hidden');
+  requestAnimationFrame(() => panel.classList.remove('translate-x-full'));
+  listarIndicadoresInativos();
+}
+
+function fecharDrawerIndicadoresInativos() {
+  const root  = document.getElementById('drawer-inativos-indicadores');
+  const panel = document.getElementById('drawer-panel-indicadores');
+  if (!root || !panel) return;
+  panel.classList.add('translate-x-full');
+  setTimeout(() => root.classList.add('hidden'), 300);
+}
+
+async function listarIndicadoresInativos() {
+  const cont = document.getElementById('lista-indicadores-inativos');
+  if (!cont) return;
+
+  cont.innerHTML = `<p class="text-gray-400">Carregando...</p>`;
+
+  try {
+    // Garante ter dados em memória
+    if (!Array.isArray(todosIndicadores) || todosIndicadores.length === 0) {
+      await carregarIndicadores();
+    }
+
+    const inativos = todosIndicadores.filter(i => i.ativo === false);
+
+    cont.innerHTML = '';
+    if (inativos.length === 0) {
+      cont.innerHTML = `<p class="text-gray-500">Nenhum indicador inativo.</p>`;
+      return;
+    }
+
+    inativos.forEach(ind => {
+      const div = document.createElement('div');
+      div.className = 'flex justify-between items-center border rounded px-3 py-2';
+      div.innerHTML = `
+        <div>
+          <div class="font-medium">${ind.nome}</div>
+          <div class="text-xs text-gray-500">${ind.setor_nome ?? '-'}</div>
+        </div>
+        <button class="text-green-600 hover:underline" onclick="ativarIndicadorViaDrawer(${ind.id})">Ativar</button>
+      `;
+      cont.appendChild(div);
+    });
+  } catch (e) {
+    console.error(e);
+    cont.innerHTML = `<p class="text-red-500">Erro ao carregar inativos.</p>`;
+  }
+}
+
+async function ativarIndicadorViaDrawer(id) {
+  await toggleStatusIndicador(id, false); // false = está inativo -> ativar
+  // Atualiza as duas visões
+  listarIndicadoresInativos();
+}
 
 /* =========================
    Dia-limite (opcional)

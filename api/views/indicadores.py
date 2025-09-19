@@ -1,7 +1,11 @@
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.timezone import make_aware              # 👈 ADD
 from django.conf import settings
+from typing import Optional
+from datetime import date, datetime                       # 👈 ADD
+from dateutil.relativedelta import relativedelta          # 👈 ADD
 import logging, traceback
 
 from rest_framework import viewsets, generics, serializers, status
@@ -99,6 +103,55 @@ def _safe_file_url(request, fieldfile):
         pass
     return None
 
+# -------------------------
+# Helpers de mês/backfill  👇 ADD
+# -------------------------
+def _first_of_month(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+def _last_month_first_day(today: Optional[date] = None) -> date:
+    """Retorna o 1º dia do mês anterior ao mês atual."""
+    t = today or date.today()
+    return _first_of_month(t) - relativedelta(months=1)
+
+def _backfill_preenchimentos_zero(indicador, autor):
+    """
+    Cria Preenchimento(valor_realizado=0) para cada (ano, mes) sem registro,
+    do indicador.mes_inicial até (mês atual - 1). Idempotente.
+    """
+    if not getattr(indicador, "mes_inicial", None):
+        return 0
+
+    inicio = _first_of_month(indicador.mes_inicial)
+    limite = _last_month_first_day()
+    if limite < inicio:
+        return 0
+
+    # (ano, mes) já existentes para este indicador (independente do usuário)
+    existentes = set(
+        Preenchimento.objects.filter(indicador=indicador)
+        .values_list("ano", "mes")
+    )
+
+    atual = inicio
+    to_create = []
+    while atual <= limite:
+        chave = (atual.year, atual.month)
+        if chave not in existentes:
+            to_create.append(Preenchimento(
+                indicador=indicador,
+                ano=atual.year,
+                mes=atual.month,
+                valor_realizado=0,
+                preenchido_por=autor,
+                data_preenchimento=make_aware(datetime(atual.year, atual.month, 1, 0, 0, 0)),
+                origem="backfill-auto",
+            ))
+        atual = atual + relativedelta(months=+1)
+
+    if to_create:
+        Preenchimento.objects.bulk_create(to_create, ignore_conflicts=True)
+    return len(to_create)
 
 # =========================
 #       INDICADORES
@@ -196,6 +249,30 @@ class IndicadorViewSet(viewsets.ModelViewSet):
         indicador.delete()
         registrar_log(request.user, f"Excluiu o indicador '{nome}'")
         return Response({"detail": "Indicador excluído com sucesso."}, status=status.HTTP_204_NO_CONTENT)
+    
+    @action(detail=False, methods=['POST'], url_path='backfill-zeros', permission_classes=[IsAuthenticated])
+    @transaction.atomic
+    def backfill_zeros(self, request):
+        """
+        Preenche automaticamente, para TODOS os indicadores ativos com mes_inicial definido,
+        os meses retroativos SEM preenchimento com valor_realizado=0, até (mês atual - 1).
+        Assina com o usuário autenticado que chamou a ação.
+        """
+        usuario = request.user
+        criados_total = 0
+
+        qs = Indicador.objects.filter(ativo=True).exclude(mes_inicial__isnull=True)
+        # Se quiser restringir ao escopo do usuário (gestor), pode reusar a mesma lógica do get_queryset()
+        # qs = self.get_queryset().filter(ativo=True).exclude(mes_inicial__isnull=True)
+
+        for ind in qs.select_related('setor'):
+            try:
+                criados = _backfill_preenchimentos_zero(ind, usuario)
+                criados_total += criados
+            except Exception:
+                logger.exception("Falha no backfill do indicador id=%s", ind.id)
+
+        return Response({"detail": "Backfill concluído.", "criados": criados_total}, status=200)
 
 
 # =========================

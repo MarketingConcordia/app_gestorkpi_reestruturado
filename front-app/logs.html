@@ -116,7 +116,7 @@
 
             <!-- Filtros -->
             <div class="bg-white shadow-sm p-4 border-b">
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
                     
                     <!-- Filtro de Usuário -->
                     <div>
@@ -144,6 +144,17 @@
                     <div>
                         <label for="filtro-data-fim" class="block text-sm font-medium text-gray-700 mb-1">Data Fim</label>
                         <input type="date" id="filtro-data-fim" class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+
+                    <!-- filtro por nome do indicador -->
+                    <div>
+                        <label for="filtro-indicador-nome" class="block text-sm font-medium text-gray-700 mb-1">Indicador (nome)</label>
+                        <input
+                            type="text"
+                            id="filtro-indicador-nome"
+                            class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="Ex.: Vendas, Faturamento..."
+                        >
                     </div>
                 </div>
 
@@ -181,8 +192,8 @@
         </div>
     </div>
     
+    <script src="js/config.js"></script>
     <script src="js/comum.js"></script>
     <script src="js/logs.js"></script>
-    <script src="js/config.js"></script>
 </body>
 </html>

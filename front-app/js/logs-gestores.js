@@ -21,12 +21,24 @@ document.addEventListener("DOMContentLoaded", () => {
   // Só carrega e mostra depois de aplicar os filtros
   const btn = document.getElementById("btn-aplicar-filtros");
   if (btn) btn.addEventListener("click", carregarLogsDoGestor);
+
+  // ✅ NOVO: Enter no filtro por nome do indicador
+  const inputIndicador = document.getElementById("filtro-indicador-nome");
+  if (inputIndicador) {
+    inputIndicador.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        carregarLogsDoGestor();
+      }
+    });
+  }
 });
 
 // 🔸 Carrega apenas os logs do gestor autenticado
 async function carregarLogsDoGestor() {
   const dataInicio = document.getElementById("filtro-data-inicio")?.value || "";
   const dataFim = document.getElementById("filtro-data-fim")?.value || "";
+  const indicadorNome = document.getElementById("filtro-indicador-nome")?.value.trim() || ""; // ✅ NOVO
 
   const btn = document.getElementById("btn-aplicar-filtros");
   if (btn) btn.disabled = true;
@@ -36,6 +48,7 @@ async function carregarLogsDoGestor() {
     const params = new URLSearchParams();
     if (dataInicio) params.append("data_inicio", dataInicio);
     if (dataFim) params.append("data_fim", dataFim);
+    if (indicadorNome) params.append("indicador_nome", indicadorNome); // ✅ NOVO
     params.append("page_size", "200");
 
     let url = `${apiBase}/logs/?${params.toString()}`;
@@ -76,6 +89,8 @@ function renderizarLogs(logs) {
         <td colspan="3" class="text-center text-gray-500 py-4">Nenhum log encontrado.</td>
       </tr>
     `;
+    const counter = document.getElementById("contador-logs"); // ✅ NOVO
+    if (counter) counter.textContent = `( 0 registros )`;     // ✅ NOVO
     return;
   }
 
@@ -88,6 +103,9 @@ function renderizarLogs(logs) {
     `;
     tbody.appendChild(tr);
   });
+
+  const counter = document.getElementById("contador-logs");   // ✅ NOVO
+  if (counter) counter.textContent = `( ${logs.length} registros )`; // ✅ NOVO
 }
 
 function formatarData(isoString) {

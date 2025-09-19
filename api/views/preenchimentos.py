@@ -1,8 +1,11 @@
+from typing import Optional 
 from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 from django.utils.timezone import make_aware, now
 from django.db import IntegrityError
 from django.db.models import F, Q, Exists, OuterRef
 from django.db.models.functions import ExtractMonth, ExtractYear
+from decimal import Decimal
 
 from rest_framework import viewsets, generics, status, serializers
 from rest_framework.decorators import api_view, permission_classes, action
@@ -27,22 +30,100 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
         .select_related('indicador', 'indicador__setor', 'preenchido_por')
     )
     serializer_class = PreenchimentoSerializer
-    permission_classes = [IsAuthenticated]  # 🔒 Apenas autenticados
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    # ===== Helpers de mês =====
+    def _first_of_month(self, d: date) -> date:
+        return date(d.year, d.month, 1)
+
+    def _last_month_first_day(self, today: Optional[date] = None) -> date:
+        t = today or date.today()
+        return self._first_of_month(t) - relativedelta(months=1)
+
+    def _autofill_zeros_until_last_month(self, autor_user):
+        """
+        Cria placeholders (valor_realizado=None) apenas nos meses previstos
+        pela periodicidade do indicador, de mes_inicial até (mês atual - 1),
+        respeitando mes_final quando existir.
+        """
+        limite = self._last_month_first_day()
+
+        # usuário que assina os lançamentos automáticos
+        autor = autor_user
+        if not autor or not getattr(autor, "is_authenticated", False):
+            from django.contrib.auth import get_user_model
+            U = get_user_model()
+            autor = U.objects.filter(is_superuser=True).order_by("id").first() or U.objects.first()
+
+        # Indicadores candidatos (com periodicidade carregada)
+        inds = (
+            Indicador.objects
+            .filter(ativo=True)
+            .exclude(mes_inicial__isnull=True)
+            .only('id', 'mes_inicial', 'mes_final', 'ativo', 'periodicidade')
+        )
+
+        for ind in inds:
+            inicio = self._first_of_month(ind.mes_inicial)
+            cap = limite
+            if getattr(ind, "mes_final", None):
+                cap = min(cap, self._first_of_month(ind.mes_final))
+            if cap < inicio:
+                continue
+
+            # passo (periodicidade) em meses
+            step = getattr(ind, "periodicidade", 1) or 1
+            try:
+                step = max(1, int(step))
+            except Exception:
+                step = 1
+
+            # pares (ano, mes) já existentes
+            existentes = set(
+                Preenchimento.objects.filter(indicador=ind).values_list("ano", "mes")
+            )
+
+            atual = inicio
+            to_create = []
+            while atual <= cap:
+                key = (atual.year, atual.month)
+                if key not in existentes:
+                    to_create.append(Preenchimento(
+                        indicador=ind,
+                        ano=atual.year,
+                        mes=atual.month,
+                        valor_realizado=None,  # pendente
+                        preenchido_por=autor,
+                        data_preenchimento=make_aware(datetime(atual.year, atual.month, 1, 0, 0, 0)),
+                        origem="placeholder-auto",
+                        confirmado=False,
+                    ))
+                # pula conforme periodicidade
+                atual += relativedelta(months=step)
+
+            if to_create:
+                Preenchimento.objects.bulk_create(to_create, ignore_conflicts=True)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         ctx["request"] = self.request
         return ctx
 
+    # Garante os placeholders antes de listar
+    def list(self, request, *args, **kwargs):
+        try:
+            self._autofill_zeros_until_last_month(request.user)
+        except Exception:
+            # falhas no autofill não devem impedir a listagem
+            pass
+        return super().list(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = super().get_queryset()
         user = self.request.user
 
-        # 🔒 Gestor vê preenchimentos:
-        # - de indicadores dos seus setores
-        # - OU indicadores visíveis
-        # - OU indicadores com permissão manual (PermissaoIndicador)
+        # Regras de visibilidade para gestor
         if getattr(user, "perfil", None) == 'gestor':
             perm_subq = PermissaoIndicador.objects.filter(usuario=user, indicador=OuterRef('indicador_id'))
             qs = qs.filter(
@@ -80,7 +161,7 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
         return qs
 
     def _user_can_write_on(self, user, indicador: Indicador) -> bool:
-        """Regra de escrita para gestores: setor OU visibilidade OU permissão manual."""
+        """Permissões de gravação: master, visibilidade, mesmo setor, ou permissão manual."""
         if getattr(user, "perfil", None) == "master":
             return True
         if indicador.visibilidade:
@@ -92,7 +173,7 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         usuario = self.request.user
 
-        # 🔒 Verifica permissão ANTES de salvar
+        # Permissão antes de salvar
         indicador = serializer.validated_data.get('indicador')
         if not self._user_can_write_on(usuario, indicador):
             raise PermissionDenied("Você não tem permissão para preencher este indicador.")
@@ -100,19 +181,21 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
         try:
             preenchimento = serializer.save(preenchido_por=usuario)
         except IntegrityError as e:
-            # Violações de unicidade (indicador, mes, ano, preenchido_por)
             raise serializers.ValidationError(
                 {"detail": "Já existe preenchimento para este indicador/mês/ano por este usuário."}
             ) from e
 
-        # Ajusta a data de preenchimento para o primeiro dia do mês/ano informado
+        # Normaliza a competência para o 1º dia
         preenchimento.data_preenchimento = make_aware(datetime(
             preenchimento.ano, preenchimento.mes, 1, 0, 0, 0
         ))
 
-        # 🔒 Upload seguro de arquivo
+        # Se tem valor, é confirmado; se ficar sem valor (None), permanece pendente
+        preenchimento.confirmado = (preenchimento.valor_realizado is not None)
+
+        # Upload/arquivo e origem
         arquivo = self.request.FILES.get('arquivo')
-        origem = self.request.data.get('origem')
+        origem = self.request.data.get('origem') or 'manual'
         storage_cfg = ConfiguracaoArmazenamento.objects.filter(ativo=True).first()
 
         if arquivo and storage_cfg:
@@ -121,17 +204,13 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
             _, ext = os.path.splitext(arquivo.name.lower())
             if ext not in ext_permitidas:
                 raise serializers.ValidationError(f"Extensão de arquivo não permitida: {ext}")
-
             url_arquivo = upload_arquivo(arquivo, arquivo.name, storage_cfg)
-            # Observação: se upload_arquivo retornar URL absoluta, o FileField aceitará string;
-            # o acesso .url pode não estar disponível; o código do projeto já trata via try/except.
             preenchimento.arquivo = url_arquivo
 
-        if origem:
-            preenchimento.origem = origem
-
+        preenchimento.origem = origem
         preenchimento.save()
 
+        # Loga somente se houve valor (deixou de ser pendente)
         if preenchimento.valor_realizado is not None:
             self._registrar_log_preenchimento(preenchimento, usuario, acao="preencheu")
 
@@ -140,7 +219,6 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
         instance: Preenchimento = serializer.instance
         indicador_alvo = serializer.validated_data.get('indicador', instance.indicador)
 
-        # 🔒 Checa permissão ANTES de salvar
         if not self._user_can_write_on(usuario, indicador_alvo):
             raise PermissionDenied("Você não tem permissão para alterar este preenchimento.")
 
@@ -150,6 +228,11 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError(
                 {"detail": "Já existe preenchimento para este indicador/mês/ano por este usuário."}
             ) from e
+
+        # Se veio 'valor_realizado' no payload, reavalia confirmação
+        if 'valor_realizado' in serializer.validated_data:
+            preenchimento.confirmado = (preenchimento.valor_realizado is not None)
+            preenchimento.save(update_fields=['confirmado'])
 
         if preenchimento.valor_realizado is not None:
             self._registrar_log_preenchimento(preenchimento, usuario, acao="atualizou")
@@ -184,14 +267,13 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='pendentes')
     def pendentes_action(self, request):
-        hoje = now().date()  # evita comparações ingênuas entre date e datetime aware
+        hoje = now().date()
         qs = self.get_queryset().filter(
-            valor_realizado__isnull=True,
+            confirmado=False,
             data_preenchimento__date__lte=hoje
         )
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
-
 
 # =========================
 #  LIST/CREATE auxiliares
@@ -207,15 +289,8 @@ class PreenchimentoListCreateView(generics.ListCreateAPIView):
         return ctx
 
     def perform_create(self, serializer):
-        """
-        Mantém o mesmo comportamento do ViewSet:
-        - checa permissão antes
-        - define preenchido_por
-        - ajusta data_preenchimento para 1º dia do mês/ano informado
-        """
         user = self.request.user
         indicador = serializer.validated_data.get('indicador')
-        # Reutiliza a regra da viewset
         if not PreenchimentoViewSet._user_can_write_on(self, user, indicador):
             raise PermissionDenied("Você não tem permissão para preencher este indicador.")
 
@@ -227,8 +302,9 @@ class PreenchimentoListCreateView(generics.ListCreateAPIView):
             ) from e
 
         instancia.data_preenchimento = make_aware(datetime(instancia.ano, instancia.mes, 1, 0, 0, 0))
-        instancia.save(update_fields=["data_preenchimento"])
-
+        instancia.confirmado = (instancia.valor_realizado is not None)  # ✅
+        instancia.origem = (self.request.data.get('origem') or 'manual')  # ✅
+        instancia.save(update_fields=["data_preenchimento", "confirmado", "origem"])
 
 # =========================
 #  ENDPOINTS AUXILIARES
@@ -276,7 +352,7 @@ def indicadores_pendentes(request):
         indicador_id=OuterRef('indicador_id'),
         mes=ExtractMonth(OuterRef('mes')),
         ano=ExtractYear(OuterRef('mes')),
-        valor_realizado__isnull=False
+        confirmado=True
     )
 
     metas_sem_preenchimento = (

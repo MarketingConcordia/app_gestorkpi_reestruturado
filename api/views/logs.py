@@ -28,6 +28,7 @@ class LogDeAcaoViewSet(viewsets.ReadOnlyModelViewSet):
         setor = self.request.query_params.get('setor')
         data_inicio = self.request.query_params.get('data_inicio')
         data_fim = self.request.query_params.get('data_fim')
+        indicador_nome = self.request.query_params.get('indicador_nome')
 
         if usuario_param and usuario_param != "todos":
             # Gestor tentando acessar log de outro usuário → bloqueia
@@ -52,5 +53,9 @@ class LogDeAcaoViewSet(viewsets.ReadOnlyModelViewSet):
             fim = parse_date(data_fim)
             if fim:
                 qs = qs.filter(data__date__lte=fim)
+
+        # 🔹 NOVO: filtro textual no campo 'acao' (onde o nome do indicador aparece nos logs)
+        if indicador_nome:
+            qs = qs.filter(acao__icontains=indicador_nome)
 
         return qs.order_by("-data")

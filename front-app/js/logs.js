@@ -58,6 +58,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Botão aplicar
   const btn = $("btn-aplicar-filtros");
   if (btn) btn.addEventListener("click", carregarLogsComFiltros);
+
+  // 🔎 NOVO: Enter no campo de indicador aplica os filtros
+  $("filtro-indicador-nome")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      $("btn-aplicar-filtros")?.click();
+    }
+  });
 });
 
 // 5) Filtros: usuários
@@ -117,6 +124,7 @@ async function carregarLogsComFiltros() {
     const setor = $("filtro-setor")?.value || "todos";
     const dataInicio = $("filtro-data-inicio")?.value || "";
     const dataFim = $("filtro-data-fim")?.value || "";
+    const indicadorNome = ($("filtro-indicador-nome")?.value || "").trim();
 
     // Validação simples de datas
     if (dataInicio && dataFim) {
@@ -133,7 +141,7 @@ async function carregarLogsComFiltros() {
     if (setor && setor !== "todos") params.append("setor", setor);
     if (dataInicio) params.append("data_inicio", dataInicio);
     if (dataFim) params.append("data_fim", dataFim);
-    // pegue bastante de uma vez, se sua API permitir:
+    if (indicadorNome) params.append("indicador_nome", indicadorNome);
     params.append("page_size", "200");
 
     let url = `${apiBase}/logs/?${params.toString()}`;

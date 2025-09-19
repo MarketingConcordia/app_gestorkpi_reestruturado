@@ -163,21 +163,35 @@
 
             <h2 class="text-xl font-semibold mb-4 mt-10 text-gray-800">Usuários Cadastrados</h2>
 
+            <!-- Toolbar de filtro de visibilidade (ativos/inativos) -->
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-sm text-gray-600">
+                    Listando: <strong id="status-lista-usuarios">Apenas ativos</strong>
+                </span>
+                <button
+                    id="btn-toggle-inativos-usuarios"
+                    type="button"
+                    class="text-sm px-3 py-1 border rounded hover:bg-gray-50"
+                >
+                    Mostrar inativos
+                </button>
+            </div>
+
             <div class="overflow-x-auto rounded shadow">
-            <table class="min-w-full bg-white border border-gray-200 text-sm">
-                <thead class="bg-gray-100 text-gray-700">
-                <tr>
-                    <th class="px-4 py-2 text-left">Nome</th>
-                    <th class="px-4 py-2 text-left">E-mail</th>
-                    <th class="px-4 py-2 text-left">Perfil</th>
-                    <th class="px-4 py-2 text-left">Setores</th>
-                    <th class="px-4 py-2 text-center">Status</th>
-                    <th class="px-4 py-2 text-center">Ações</th>
-                </tr>
-                </thead>
-                <tbody id="tabela-usuarios" class="divide-y divide-gray-200">
-                </tbody>
-            </table>
+                <table class="min-w-full bg-white border border-gray-200 text-sm">
+                    <thead class="bg-gray-100 text-gray-700">
+                    <tr>
+                        <th class="px-4 py-2 text-left">Nome</th>
+                        <th class="px-4 py-2 text-left">E-mail</th>
+                        <th class="px-4 py-2 text-left">Perfil</th>
+                        <th class="px-4 py-2 text-left">Setores</th>
+                        <th class="px-4 py-2 text-center">Status</th>
+                        <th class="px-4 py-2 text-center">Ações</th>
+                    </tr>
+                    </thead>
+                    <tbody id="tabela-usuarios" class="divide-y divide-gray-200">
+                    </tbody>
+                </table>
             </div>
         </section>
       </main>
@@ -230,6 +244,32 @@
             </div>
             </form>
         </div>
+    </div>
+
+    <!-- Drawer: Usuários Inativos -->
+    <div id="drawer-inativos-usuarios" class="fixed inset-0 z-40 hidden" aria-hidden="true">
+        <!-- overlay -->
+        <div id="drawer-backdrop-usuarios" class="absolute inset-0 bg-black bg-opacity-50"></div>
+
+        <!-- painel -->
+        <aside
+        id="drawer-panel-usuarios"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="drawer-title-usuarios"
+        class="absolute right-0 top-0 h-full w-full max-w-xl bg-white shadow-xl transform translate-x-full transition-transform duration-300 flex flex-col"
+        >
+            <header class="flex items-center justify-between px-4 py-3 border-b">
+                <h3 id="drawer-title-usuarios" class="text-lg font-semibold">Usuários inativos</h3>
+                <button id="btn-close-inativos-usuarios" class="p-2 rounded hover:bg-gray-100" aria-label="Fechar">✕</button>
+            </header>
+
+            <div class="p-4 flex-1 overflow-y-auto">
+                <p class="text-sm text-gray-600 mb-3">Clique em “Ativar” para reativar um usuário.</p>
+                <div id="lista-usuarios-inativos" class="space-y-2"></div>
+            </div>
+            </div>
+        </aside>
     </div>
 
 

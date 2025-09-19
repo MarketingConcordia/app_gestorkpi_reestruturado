@@ -119,31 +119,72 @@
         <div class="bg-white shadow-md rounded-lg p-6 mb-6">
           <h2 class="text-xl font-semibold mb-4">Cadastro de Setores</h2>
         
-          <form id="form-setor" class="flex gap-4 items-center mb-4">
-            <input
-              type="text"
-              id="nomeSetor"
-              placeholder="Nome do setor"
-              class="border border-gray-300 rounded px-3 py-2 w-1/2"
-              required
-            />
-            <button
-              type="submit"
-              class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-            >
-              Cadastrar
-            </button>
-          </form>
+            <form id="form-setor" class="flex gap-4 items-center mb-4">
+                <input
+                type="text"
+                id="nomeSetor"
+                placeholder="Nome do setor"
+                class="border border-gray-300 rounded px-3 py-2 w-1/2"
+                required
+                />
+                <button
+                type="submit"
+                class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                >
+                Cadastrar
+                </button>
+            </form>
         
-          <div id="lista-setores" class="space-y-2">
-            <!-- Setores cadastrados aparecerão aqui -->
-          </div>
+            <!-- Toolbar de filtro de visibilidade (ativos/inativos) -->
+            <div class="flex items-center justify-between mb-3">
+            <span class="text-sm text-gray-600">
+                Listando: <strong id="status-lista-setores">Apenas ativos</strong>
+            </span>
+            <button
+                id="btn-toggle-inativos-setores"
+                type="button"
+                class="text-sm px-3 py-1 border rounded hover:bg-gray-50"
+            >
+                Mostrar inativos
+            </button>
+            </div>
+
+            <div id="lista-setores" class="space-y-2">
+                <!-- Setores cadastrados aparecerão aqui -->
+            </div>
         </div>
           
     </main>
       
     </div>
   </div>
+
+    <!-- Drawer: Setores Inativos -->
+    <div id="drawer-inativos-setores" class="fixed inset-0 z-40 hidden" aria-hidden="true">
+            <!-- overlay -->
+            <div id="drawer-backdrop-setores" class="absolute inset-0 bg-black bg-opacity-50"></div>
+
+            <!-- painel -->
+            <aside
+            id="drawer-panel-setores"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="drawer-title-setores"
+            class="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-xl transform translate-x-full transition-transform duration-300 flex flex-col"
+            >
+                <header class="flex items-center justify-between px-4 py-3 border-b">
+                    <h3 id="drawer-title-setores" class="text-lg font-semibold">Setores inativos</h3>
+                    <button id="btn-close-inativos-setores" class="p-2 rounded hover:bg-gray-100" aria-label="Fechar">✕</button>
+                </header>
+
+                <div class="p-4 flex-1 overflow-y-auto">
+                    <p class="text-sm text-gray-600 mb-3">Clique em “Ativar” para reativar um setor.</p>
+                    <div id="lista-setores-inativos" class="space-y-2">
+                        <!-- itens renderizados via JS -->
+                    </div>
+                </div>
+            </aside>
+    </div>
 
     <script src="js/setores.js"></script>
     <script src="js/comum.js"></script>

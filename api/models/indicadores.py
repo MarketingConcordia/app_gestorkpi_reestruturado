@@ -2,6 +2,7 @@ from django.db import models
 from django.conf import settings
 from datetime import date
 from django.core.validators import MinValueValidator, MaxValueValidator
+from decimal import Decimal
 
 from .setores import Setor
 from .usuarios import Usuario
@@ -32,7 +33,7 @@ class Indicador(models.Model):
     setor = models.ForeignKey(Setor, on_delete=models.CASCADE, related_name='indicadores')
     tipo_meta = models.CharField(max_length=20, choices=TIPO_META_CHOICES)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pendente')
-    valor_meta = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    valor_meta = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     tipo_valor = models.CharField(max_length=20, choices=TIPO_VALOR_CHOICES, default='numeral')
     criado_em = models.DateTimeField(auto_now_add=True)
     periodicidade = models.PositiveIntegerField(
@@ -103,7 +104,13 @@ class MetaMensal(models.Model):
 # ======================
 class Preenchimento(models.Model):
     indicador = models.ForeignKey(Indicador, on_delete=models.CASCADE, related_name='preenchimentos')
-    valor_realizado = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # ✅ agora pode ser nulo; sem default 0.00
+    valor_realizado = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # ✅ novo flag
+    confirmado = models.BooleanField(default=False)
+
     mes = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(12)])
     ano = models.IntegerField()
     preenchido_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -117,6 +124,8 @@ class Preenchimento(models.Model):
         indexes = [
             models.Index(fields=['indicador', 'ano', 'mes'], name='idx_preench_indicador_ano_mes'),
             models.Index(fields=['data_preenchimento'], name='idx_preench_data'),
+            # (opcional) ajuda a filtrar pendentes
+            # models.Index(fields=['confirmado'], name='idx_preench_confirmado'),
         ]
         ordering = ('-data_preenchimento',)
 

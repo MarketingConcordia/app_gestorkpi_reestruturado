@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from rest_framework import serializers
 
 from api.models import Preenchimento, MetaMensal, Indicador
@@ -21,17 +22,23 @@ class PreenchimentoSerializer(serializers.ModelSerializer):
     preenchido_por = serializers.SerializerMethodField()
     meta = serializers.SerializerMethodField()
     setor_id = serializers.IntegerField(source='indicador.setor.id', read_only=True)
+    confirmado = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Preenchimento
         fields = [
-            'id', 'indicador', 'valor_realizado', 'data_preenchimento',
+            'id', 'indicador', 'valor_realizado', 'confirmado', 'data_preenchimento',
             'indicador_nome', 'setor_nome', 'setor_id', 'tipo_meta', 'tipo_valor',
             'indicador_mes_inicial', 'indicador_periodicidade',
             'meta', 'mes', 'ano',
-            'comentario', 'arquivo', 'preenchido_por'
+            'comentario', 'arquivo', 'origem', 'preenchido_por'
         ]
-        read_only_fields = ('id', 'data_preenchimento', 'preenchido_por')
+        read_only_fields = ('id', 'data_preenchimento', 'preenchido_por', 'confirmado')
+        extra_kwargs = {
+            # ✅ agora pode ser nulo
+            'valor_realizado': {'required': False, 'allow_null': True},
+            'origem': {'required': False, 'allow_null': True, 'allow_blank': True},
+        }
 
     # ---- validações ----
     def validate_mes(self, v):
@@ -53,6 +60,7 @@ class PreenchimentoSerializer(serializers.ModelSerializer):
         return v
 
     def validate_valor_realizado(self, v):
+        # ✅ se não veio valor, mantenha None (placeholder/pendente)
         if v in (None, ''):
             return None
         return normalize_number(v, "valor_realizado")

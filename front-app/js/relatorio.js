@@ -2,6 +2,27 @@
 const tipoPorIndicadorId = new Map();
 const tipoPorIndicadorNome = new Map();
 
+const metaPadraoPorIndicadorId = new Map();
+const metaPadraoPorIndicadorNome = new Map();
+const tipoMetaPorIndicadorId   = new Map();
+const tipoMetaPorIndicadorNome = new Map();
+
+// --- ativos (indicadores e setores) ---
+let __ativosIndicadores = new Set();
+let __ativosSetoresId   = new Set();
+let __ativosSetoresNome = new Set();
+
+function setorEhAtivoPorIdOuNome(idPossivel, nomePossivel) {
+  const okId   = idPossivel != null && __ativosSetoresId.has(Number(idPossivel));
+  const okNome = nomePossivel
+    ? __ativosSetoresNome.has(normalizarTexto(nomePossivel))
+    : false;
+  return okId || okNome;
+}
+
+// 👇 cache de metas mensais
+let __metasMensaisCache = null;
+
 // === ESTADO GERAL E SEGURANÇA DE ACESSO ===
 document.addEventListener("DOMContentLoaded", async () => {
   const perfil = localStorage.getItem("perfil_usuario");
@@ -90,8 +111,16 @@ async function carregarSetores() {
 
   select.innerHTML = `<option value="">Todos os setores</option>`;
   const setores = Array.isArray(data) ? data : data.results || [];
-  setores.forEach(setor => {
-    // o value fica como o NOME, para comparação por nome
+
+  // mantenha só ativos (se a API não enviar "ativo", tratamos como true)
+  const setoresAtivos = setores.filter(s => s.ativo !== false);
+
+  // preencher caches de ativos por id e por nome normalizado
+  __ativosSetoresId   = new Set(setoresAtivos.map(s => s.id).filter(x => x != null));
+  __ativosSetoresNome = new Set(setoresAtivos.map(s => normalizarTexto(s.nome)));
+
+  select.innerHTML = `<option value="">Todos os setores</option>`;
+  setoresAtivos.forEach(setor => {
     select.innerHTML += `<option value="${setor.nome}">${setor.nome}</option>`;
   });
 }
@@ -108,6 +137,11 @@ async function carregarIndicadores() {
   if (!res.ok) throw new Error("Erro ao carregar indicadores");
   const data = await res.json();
   const indicadores = Array.isArray(data) ? data : (data.results || []);
+
+  // ids de indicadores ativos
+  __ativosIndicadores = new Set(
+    indicadores.filter(i => i.ativo !== false).map(i => i.id)
+  );
 
   // 2) Garante os preenchimentos em cache
   const preenchimentos = await ensurePreenchimentosCache();
@@ -139,11 +173,20 @@ async function carregarIndicadores() {
 
   indicadores
     .filter(i => {
+      // (0) indicador precisa ser ativo
+      if (!__ativosIndicadores.has(i.id)) return false;
+
+      // (0b) setor do indicador precisa ser ativo
+      const setorId   = i.setor_id ?? i.setor ?? i.setor?.id ?? null;
+      const setorNome = i.setor_nome ?? i.setor?.nome ?? "";
+      if (!setorEhAtivoPorIdOuNome(setorId, setorNome)) return false;
+
       // a) Respeita o setor selecionado (quando houver)
       if (setorSelecionadoNorm) {
-        const setorDoIndicador = normalizarTexto(i.setor_nome);
+        const setorDoIndicador = normalizarTexto(i.setor_nome ?? i.setor?.nome ?? "");
         if (setorDoIndicador !== setorSelecionadoNorm) return false;
       }
+
       // b) Garante pelo menos 1 mês preenchido
       const nomeInd = String(i.nome || "").trim();
       return indicadoresComHistorico.has(nomeInd);
@@ -157,151 +200,185 @@ async function carregarIndicadores() {
 
       // ✅ guardar o tipo por id e por nome (fallback)
       const tipo = (i.tipo_valor || 'numeral');
-      if (i.id != null) tipoPorIndicadorId.set(i.id, tipo);
+      if (i.id != null) {
+        tipoPorIndicadorId.set(i.id, tipo);
+        // 👇 novos mapas
+        metaPadraoPorIndicadorId.set(i.id, Number(i.valor_meta ?? 0));
+        tipoMetaPorIndicadorId.set(i.id, i.tipo_meta || 'crescente');
+      }
       tipoPorIndicadorNome.set(nome, tipo);
+      // 👇 fallback por nome
+      metaPadraoPorIndicadorNome.set(nome, Number(i.valor_meta ?? 0));
+      tipoMetaPorIndicadorNome.set(nome, i.tipo_meta || 'crescente');
     });
 }
 
-function carregarPreenchimentos() {
-    const token = localStorage.getItem("access");
-
-    fetch(`${window.API_BASE_URL}/api/preenchimentos/`, {
+async function carregarPreenchimentos() {
+  const token = localStorage.getItem("access");
+  try {
+    const [resP] = await Promise.all([
+      fetch(`${window.API_BASE_URL}/api/preenchimentos/`, {
         headers: { "Authorization": `Bearer ${token}` }
-    })
-    .then(res => res.json())
-    .then(data => {
-        const preenchimentos = Array.isArray(data) ? data : data.results || [];
-        aplicarFiltros(preenchimentos);
-    })
-    .catch(err => {
-        console.error("Erro ao carregar preenchimentos:", err);
-        alert("Erro ao buscar os dados do histórico.");
-    });
+      }),
+      ensureMetasMensaisCache() // garante __metasMensaisCache
+    ]);
+    if (!resP.ok) throw new Error("Erro ao carregar preenchimentos");
+    const data = await resP.json();
+    const preenchimentos = Array.isArray(data) ? data : (data.results || []);
+    aplicarFiltros(preenchimentos, __metasMensaisCache);
+  } catch (err) {
+    console.error("Erro ao carregar preenchimentos:", err);
+    alert("Erro ao buscar os dados do histórico.");
+  }
 }
 
-function aplicarFiltros(preenchimentos) {
-    const setorSelecionado = document.getElementById("filter-setor").value;
-    const indicadorSelecionado = document.getElementById("filter-indicador").value;
-    const dataInicialStr = document.getElementById("filter-data-inicial").value;
-    const dataFinalStr = document.getElementById("filter-data-final").value;
-    const statusSelecionado = document.getElementById("filter-status").value;
+function aplicarFiltros(preenchimentos, metasMensais) {
+  const setorSelecionado      = document.getElementById("filter-setor").value;
+  const indicadorSelecionado  = document.getElementById("filter-indicador").value;
+  const dataInicialStr        = document.getElementById("filter-data-inicial").value; // YYYY-MM
+  const dataFinalStr          = document.getElementById("filter-data-final").value;   // YYYY-MM
+  const statusSelecionado     = document.getElementById("filter-status").value;
 
-    if (!dataInicialStr || !dataFinalStr || !statusSelecionado) {
-        console.warn("Preencha todos os filtros para aplicar.");
-        document.getElementById("historico-container").classList.add("hidden");
-        return;
+  if (!dataInicialStr || !dataFinalStr || !statusSelecionado) {
+    console.warn("Preencha todos os filtros para aplicar.");
+    document.getElementById("historico-container").classList.add("hidden");
+    return;
+  }
+
+  // intervalo de meses (YYYY-MM) — inclusive
+  const mesesOrdenados = enumMonthsInclusive(dataInicialStr, dataFinalStr);
+
+  const lista = Array.isArray(preenchimentos) ? preenchimentos : (preenchimentos?.results || []);
+
+  // filtro base por datas/sets/indicadores
+  const [anoIni, mesIni] = dataInicialStr.split("-").map(Number);
+  const [anoFim, mesFim] = dataFinalStr.split("-").map(Number);
+  const inicioTimestamp  = new Date(anoIni, mesIni - 1).getTime();
+  const fimTimestamp     = new Date(anoFim,  mesFim - 1).getTime();
+
+  const filtrados = lista.filter(p => {
+    const dataTimestamp  = new Date(p.ano, p.mes - 1).getTime();
+    const condDataIni    = dataTimestamp >= inicioTimestamp;
+    const condDataFim    = dataTimestamp <= fimTimestamp;
+    const condSetor      = setorSelecionado ? p.setor_nome === setorSelecionado : true;
+    const condIndicador  = indicadorSelecionado ? p.indicador_nome === indicadorSelecionado : true;
+
+    let condStatus = true;
+    if (statusSelecionado === "atingidos") {
+      condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Atingida";
+    } else if (statusSelecionado === "nao-atingidos") {
+      condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Não atingida";
     }
 
-    // ✅ Corrige a diferença de mês no UTC
-    const [anoIni, mesIni] = dataInicialStr.split("-").map(Number);
-    const [anoFim, mesFim] = dataFinalStr.split("-").map(Number);
-    const inicioTimestamp = new Date(anoIni, mesIni - 1).getTime();
-    const fimTimestamp = new Date(anoFim, mesFim - 1).getTime();
+    // 🔒 Bloqueio de inativos: indicador e setor precisam ser ativos
+    const indAtivo = __ativosIndicadores.has(p.indicador);
+    const setAtivo = setorEhAtivoPorIdOuNome(
+      p.setor_id || p.setor || p.setor?.id,
+      p.setor_nome || p.setor?.nome || ""
+    );
+    if (!indAtivo || !setAtivo) return false;
 
-    const lista = Array.isArray(preenchimentos) ? preenchimentos : preenchimentos.results || [];
+    return condSetor && condIndicador && condDataIni && condDataFim && condStatus;
+  });
 
-    const filtrados = lista.filter(p => {
-        const dataTimestamp = new Date(p.ano, p.mes - 1).getTime();
+  // AGRUPA por indicador_nome -> { 'YYYY-MM': {valor, meta, status, tipo_valor} }
+  const agrupado = {};
+  filtrados.forEach(p => {
+    const chaveMes = ymStr(p.ano, p.mes);
+    const indNome  = String(p.indicador_nome || "").trim();
+    if (!indNome) return;
 
-        const condDataInicial = dataTimestamp >= inicioTimestamp;
-        const condDataFinal = dataTimestamp <= fimTimestamp;
-        const condSetor = setorSelecionado ? p.setor_nome === setorSelecionado : true;
-        const condIndicador = indicadorSelecionado ? p.indicador_nome === indicadorSelecionado : true;
+    if (!agrupado[indNome]) agrupado[indNome] = {};
+    agrupado[indNome][chaveMes] = {
+      valor:  p.valor_realizado,
+      meta:   p.meta,
+      status: calcularStatus(p.valor_realizado, p.meta, p.tipo_meta),
+      tipo_valor: p.tipo_valor
+        ?? (p.indicador != null ? tipoPorIndicadorId.get(p.indicador) : undefined)
+        ?? tipoPorIndicadorNome.get(indNome)
+        ?? 'numeral',
+      _id: p.indicador ?? null // guardar id para buscar meta mensal
+    };
+  });
 
-        let condStatus = true;
-        if (statusSelecionado === "atingidos") {
-            condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Atingida";
-        } else if (statusSelecionado === "nao-atingidos") {
-            condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Não atingida";
-        }
+  // COMPLETA meses faltantes com valor=0 e meta correta (mensal ou padrão)
+  Object.keys(agrupado).forEach(indNome => {
+    const porMes = agrupado[indNome];
+    // pega qualquer id conhecido nas células já presentes
+    const algumId = Object.values(porMes).find(x => x && x._id != null)?._id ?? null;
 
-        return condSetor && condIndicador && condDataInicial && condDataFinal && condStatus;
-    });
+    mesesOrdenados.forEach(yyyyMM => {
+      if (!porMes[yyyyMM]) {
+        const meta = metaPara(algumId, indNome, yyyyMM, metasMensais);
+        const tipoValor = (algumId != null ? tipoPorIndicadorId.get(algumId) : undefined)
+                       ?? tipoPorIndicadorNome.get(indNome)
+                       ?? 'numeral';
+        const tipoMeta  = tipoMetaPara(algumId, indNome);
+        const status    = (meta == null) ? "Sem dados" : calcularStatus(0, meta, tipoMeta);
 
-    renderizarHistorico(filtrados);
-
-    const historicoDiv = document.getElementById("historico-container");
-    if (filtrados.length > 0) {
-        historicoDiv.classList.remove("hidden");
-    } else {
-        historicoDiv.classList.add("hidden");
-    }
-}
-
-function renderizarHistorico(preenchimentos) {
-    const tbody = document.getElementById("historico-body");
-    const thead = document.getElementById("historico-head");
-    tbody.innerHTML = "";
-    thead.innerHTML = "";
-
-    const dadosAgrupados = {};
-    const mesesSet = new Set();
-
-    preenchimentos.forEach(p => {
-        const chaveMes = `${p.ano}-${String(p.mes).padStart(2, '0')}`;
-        mesesSet.add(chaveMes);
-
-        if (!dadosAgrupados[p.indicador_nome]) {
-            dadosAgrupados[p.indicador_nome] = {};
-        }
-
-        dadosAgrupados[p.indicador_nome][chaveMes] = {
-            valor: p.valor_realizado,
-            meta:  p.meta,
-            status: calcularStatus(p.valor_realizado, p.meta, p.tipo_meta),
-            // ✅ preferir o que vier do preenchimento; senão, buscar pelos mapas
-            tipo_valor: p.tipo_valor
-                    ?? (p.indicador != null ? tipoPorIndicadorId.get(p.indicador) : undefined)
-                    ?? tipoPorIndicadorNome.get(p.indicador_nome)
-                    ?? 'numeral'
+        porMes[yyyyMM] = {
+          valor:  0,           // 👈 retroativo "virtual"
+          meta:   meta,        // meta do mês (ou padrão; pode ser null)
+          status: status,
+          tipo_valor: tipoValor
         };
+      }
     });
+  });
 
-    const mesesOrdenados = Array.from(mesesSet).sort();
+  renderizarHistorico(agrupado, mesesOrdenados);
 
-    let header = `<th class="px-4 py-2">Indicador</th>`;
+  const historicoDiv = document.getElementById("historico-container");
+  const temLinhas = Object.keys(agrupado).length > 0;
+  if (temLinhas) historicoDiv.classList.remove("hidden");
+  else historicoDiv.classList.add("hidden");
+}
+
+function renderizarHistorico(dadosAgrupados, mesesOrdenados) {
+  const tbody = document.getElementById("historico-body");
+  const thead = document.getElementById("historico-head");
+  tbody.innerHTML = "";
+  thead.innerHTML = "";
+
+  // Cabeçalho
+  let header = `<th class="px-4 py-2">Indicador</th>`;
+  mesesOrdenados.forEach(mes => {
+    const [ano, mesNum] = mes.split("-");
+    const mesLabel = `${mesPtBr(mesNum)}/${ano.slice(2)}`;
+    header += `
+      <th class="px-4 py-2">Valor ${mesLabel}</th>
+      <th class="px-4 py-2">Meta ${mesLabel}</th>
+      <th class="px-4 py-2">Status ${mesLabel}</th>
+    `;
+  });
+  thead.innerHTML = `<tr>${header}</tr>`;
+
+  // Linhas
+  Object.keys(dadosAgrupados).sort().forEach(indicador => {
+    let row = `<td class="px-4 py-2 font-semibold">${indicador}</td>`;
+
     mesesOrdenados.forEach(mes => {
-        const [ano, mesNum] = mes.split("-");
-        const mesLabel = `${mesPtBr(mesNum)}/${ano.slice(2)}`;
-        header += `
-            <th class="px-4 py-2">Valor ${mesLabel}</th>
-            <th class="px-4 py-2">Meta ${mesLabel}</th>
-            <th class="px-4 py-2">Status ${mesLabel}</th>
-        `;
+      const dados = dadosAgrupados[indicador][mes]; // garantido no completar
+      const status = (String(dados.status || "")).toLowerCase();
+      const corStatus = status === "atingida"
+        ? "text-green-600"
+        : (status === "não atingida" || status === "nao atingida")
+          ? "text-red-600" : "text-gray-600";
+
+      const icone = status === "atingida"
+        ? "✅"
+        : (status === "não atingida" || status === "nao atingida")
+          ? "❌" : "📊";
+
+      row += `
+        <td class="px-4 py-2 border-l border-gray-300">${formatarValor(dados.valor, dados.tipo_valor)}</td>
+        <td class="px-4 py-2">${formatarValor(dados.meta,  dados.tipo_valor)}</td>
+        <td class="px-4 py-2 ${corStatus}">${icone} ${dados.status || "Sem dados"}</td>
+      `;
     });
-    thead.innerHTML = `<tr>${header}</tr>`;
 
-    for (const indicador in dadosAgrupados) {
-        let row = `<td class="px-4 py-2 font-semibold">${indicador}</td>`;
-
-        mesesOrdenados.forEach(mes => {
-            const dados = dadosAgrupados[indicador][mes];
-            if (dados) {
-                const status = (dados.status || "").toLowerCase();
-                const corStatus = status === "atingida"
-                    ? "text-green-600"
-                    : status === "não atingida" || status === "nao atingida"
-                    ? "text-red-600"
-                    : "text-gray-600";
-
-                const icone = status === "atingida"
-                    ? "✅"
-                    : status === "não atingida" || status === "nao atingida"
-                    ? "❌"
-                    : "📊";
-
-                row += `
-                    <td class="px-4 py-2 border-l border-gray-300">${formatarValor(dados.valor, dados.tipo_valor)}</td>
-                    <td class="px-4 py-2">${formatarValor(dados.meta,  dados.tipo_valor)}</td>
-                    <td class="px-4 py-2 ${corStatus}">${icone} ${dados.status}</td>
-                `;
-            } else {
-                row += `<td class="px-4 py-2">—</td><td class="px-4 py-2">—</td><td class="px-4 py-2">—</td>`;
-            }
-        });
-
-        tbody.innerHTML += `<tr>${row}</tr>`;
-    }
+    tbody.innerHTML += `<tr>${row}</tr>`;
+  });
 }
 
 function calcularStatus(valor, meta, tipo) {
@@ -317,6 +394,56 @@ function mesPtBr(mes) {
         "07": "Jul", "08": "Ago", "09": "Set", "10": "Out", "11": "Nov", "12": "Dez"
     };
     return nomes[mes] || mes;
+}
+
+// ==== Helpers de período (YYYY-MM) e metas ====
+function ymStr(ano, mes) {
+  return `${String(ano).padStart(4,'0')}-${String(mes).padStart(2,'0')}`;
+}
+function enumMonthsInclusive(iniYYYYMM, fimYYYYMM) {
+  if (!iniYYYYMM || !fimYYYYMM) return [];
+  let [y, m] = iniYYYYMM.split('-').map(Number);
+  const [ey, em] = fimYYYYMM.split('-').map(Number);
+  const out = [];
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(ymStr(y, m));
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+async function ensureMetasMensaisCache() {
+  if (Array.isArray(__metasMensaisCache)) return __metasMensaisCache;
+  const token = localStorage.getItem("access");
+  const res = await fetch(`${window.API_BASE_URL}/api/metas-mensais/`, {
+    headers: { "Authorization": `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error("Erro ao carregar metas mensais");
+  const data = await res.json();
+  __metasMensaisCache = Array.isArray(data) ? data : (data.results || []);
+  return __metasMensaisCache;
+}
+function metaPara(indicadorId, indicadorNome, yyyyMM, metasMensais) {
+  // 1) meta mensal do mês, se existir
+  const mm = metasMensais.find(m => m.indicador === indicadorId && String(m.mes).startsWith(yyyyMM));
+  if (mm) return Number(mm.valor_meta);
+  // 2) meta padrão do indicador
+  if (indicadorId != null && metaPadraoPorIndicadorId.has(indicadorId)) {
+    return Number(metaPadraoPorIndicadorId.get(indicadorId));
+  }
+  if (indicadorNome && metaPadraoPorIndicadorNome.has(indicadorNome)) {
+    return Number(metaPadraoPorIndicadorNome.get(indicadorNome));
+  }
+  // 3) fallback
+  return null;
+}
+function tipoMetaPara(indicadorId, indicadorNome) {
+  if (indicadorId != null && tipoMetaPorIndicadorId.has(indicadorId)) {
+    return String(tipoMetaPorIndicadorId.get(indicadorId));
+  }
+  if (indicadorNome && tipoMetaPorIndicadorNome.has(indicadorNome)) {
+    return String(tipoMetaPorIndicadorNome.get(indicadorNome));
+  }
+  return "crescente";
 }
 
 // ==== Helpers de formatação ====

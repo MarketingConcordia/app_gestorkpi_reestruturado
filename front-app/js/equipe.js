@@ -1,3 +1,5 @@
+window.__setoresAtivos = [];
+
 document.addEventListener("DOMContentLoaded", () => {
   const form = document.getElementById("form-gestor");
 
@@ -9,6 +11,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
   listarGestores();
   preencherDropdownSetores();
+
+  // Drawer: abrir/fechar
+  const btnAbrir = document.getElementById("btn-toggle-inativos-usuarios");
+  const btnFechar = document.getElementById("btn-close-inativos-usuarios");
+  const backdrop = document.getElementById("drawer-backdrop-usuarios");
+
+  btnAbrir?.addEventListener("click", abrirDrawerUsuariosInativos);
+  btnFechar?.addEventListener("click", fecharDrawerUsuariosInativos);
+  backdrop?.addEventListener("click", fecharDrawerUsuariosInativos);
+
+  // Fecha com ESC
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") fecharDrawerUsuariosInativos();
+  });
 
   // 🧠 Controle do campo setor conforme perfil selecionado
   const perfilSelect = document.getElementById("perfil");
@@ -111,27 +127,29 @@ function listarGestores() {
   })
     .then(res => res.json())
     .then(data => {
-      const usuarios = data.results || data;
+      const usuarios = Array.isArray(data?.results) ? data.results
+                      : (Array.isArray(data) ? data : []);
       tabela.innerHTML = "";
 
-      if (usuarios.length === 0) {
+      // ✅ apenas ativos na tabela principal
+      const usuariosAtivos = usuarios.filter(u => u.is_active);
+
+      if (usuariosAtivos.length === 0) {
         tabela.innerHTML = `
           <tr>
-            <td colspan="6" class="text-center py-4 text-gray-500">Nenhum usuário encontrado.</td>
+            <td colspan="6" class="text-center py-4 text-gray-500">Nenhum usuário ativo.</td>
           </tr>`;
         return;
       }
 
-      usuarios.forEach(usuario => {
+      usuariosAtivos.forEach(usuario => {
         const tr = document.createElement("tr");
 
         const setores = (usuario.setores || [])
           .map(s => s.nome)
           .join(", ") || "-";
 
-        const statusLabel = usuario.is_active
-          ? `<span class="text-green-600 font-medium">Ativo</span>`
-          : `<span class="text-red-600 font-medium">Inativo</span>`;
+        const statusLabel = `<span class="text-green-600 font-medium">Ativo</span>`;
 
         const usuarioLogadoId = parseInt(localStorage.getItem("usuario_id"));
         const perfilLogado = localStorage.getItem("perfil_usuario");
@@ -139,9 +157,7 @@ function listarGestores() {
         let btnStatus = "";
         // Só mostra o botão se NÃO for o próprio Master logado
         if (!(perfilLogado === "master" && usuario.id === usuarioLogadoId)) {
-          btnStatus = usuario.is_active
-            ? `<button onclick="alterarStatusUsuario(${usuario.id}, false)" class="text-red-600 hover:underline">Inativar</button>`
-            : `<button onclick="alterarStatusUsuario(${usuario.id}, true)" class="text-green-600 hover:underline">Ativar</button>`;
+          btnStatus = `<button onclick="alterarStatusUsuario(${usuario.id}, false)" class="text-red-600 hover:underline">Inativar</button>`;
         }
 
         tr.innerHTML = `
@@ -168,9 +184,9 @@ function listarGestores() {
     });
 }
 
-function alterarStatusUsuario(id, novoStatus) {
+function alterarStatusUsuario(id, novoStatus, onSuccess) {
   const token = localStorage.getItem("access");
-  const usuarioLogadoId = parseInt(localStorage.getItem("usuario_id")); // ID salvo no login
+  const usuarioLogadoId = parseInt(localStorage.getItem("usuario_id"));
   const perfilLogado = localStorage.getItem("perfil_usuario");
 
   // 🔒 Impede que o próprio Master se inative
@@ -189,14 +205,23 @@ function alterarStatusUsuario(id, novoStatus) {
   })
     .then(res => {
       if (!res.ok) throw new Error("Falha ao alterar status");
+      // Atualiza a lista principal
       listarGestores();
+
+      // Se o drawer estiver aberto, atualiza a lista de inativos
+      const drawer = document.getElementById("drawer-inativos-usuarios");
+      if (drawer && !drawer.classList.contains("hidden")) {
+        listarUsuariosInativos();
+      }
+
+      // Callback opcional
+      if (typeof onSuccess === "function") onSuccess();
     })
     .catch(err => {
       console.error("Erro:", err);
       alert("Erro ao alterar status do usuário.");
     });
 }
-
 
 function excluirGestor(id) {
   const confirmar = confirm("Tem certeza que deseja excluir este gestor?");
@@ -244,24 +269,35 @@ function editarGestor(id) {
       if (gestor.perfil === "gestor") {
         setorWrapper.classList.remove("hidden");
 
-        // Desmarca todos os checkboxes antes de marcar os corretos
-        dropdownContainer.querySelectorAll('input[type="checkbox"]').forEach(checkbox => checkbox.checked = false);
+        // ✅ Reconstroi o dropdown de EDIÇÃO com:
+        const ativos = Array.isArray(window.__setoresAtivos) ? window.__setoresAtivos : [];
+        const vinculados = Array.isArray(gestor.setores) ? gestor.setores : [];
+        const adicionaisInativos = vinculados
+          .filter(s => !ativos.some(a => a.id === s.id))
+          .map(s => ({ ...s, nome: `${s.nome} (inativo)` }));
 
-        // Marca como selecionado todos os setores do gestor
-        if (gestor.setores && gestor.setores.length > 0) {
-          const setorIds = gestor.setores.map(s => s.id);
+        const listaParaEdicao = [...ativos, ...adicionaisInativos]
+          .filter((s, idx, arr) => arr.findIndex(x => x.id === s.id) === idx); // remove duplicatas por id
+
+        // Recria o dropdown no container de edição
+        criarDropdown(dropdownContainer, listaParaEdicao, true);
+
+        // Desmarca todos, depois marca os que o gestor já possui
+        dropdownContainer.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        if (vinculados.length > 0) {
+          const setorIds = vinculados.map(s => s.id);
           setorIds.forEach(setorId => {
-            const checkbox = document.querySelector(`#dropdown-setores-edicao input[type="checkbox"][value="${setorId}"]`);
-            if (checkbox) {
-              checkbox.checked = true;
-            }
+            const checkbox = dropdownContainer.querySelector(`input[type="checkbox"][value="${setorId}"]`);
+            if (checkbox) checkbox.checked = true;
           });
         }
       } else {
         setorWrapper.classList.add("hidden");
-        dropdownContainer.querySelectorAll('input[type="checkbox"]').forEach(checkbox => checkbox.checked = false);
+        // Recria dropdown vazio/ativos (não precisa manter seleção)
+        criarDropdown(dropdownContainer, Array.isArray(window.__setoresAtivos) ? window.__setoresAtivos : [], true);
+        dropdownContainer.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
       }
-      
+
       // Atualiza o texto do botão do dropdown para o modal de edição
       updateDropdownText(dropdownContainer.querySelector('.dropdown-button'));
 
@@ -348,13 +384,20 @@ function preencherDropdownSetores() {
       return res.json();
     })
     .then(data => {
-      const setores = data.results;
+      const todos = Array.isArray(data?.results) ? data.results
+                  : (Array.isArray(data) ? data : []);
 
-      // Cria o dropdown para o formulário de cadastro
-      criarDropdown(containerCadastro, setores);
+      // ✅ Apenas setores ativos para CADASTRO
+      const setoresAtivos = todos.filter(s => s.ativo === true);
 
-      // Cria o dropdown para o modal de edição
-      criarDropdown(containerEdicao, setores, true);
+      // Guarda global para uso no modal de edição
+      window.__setoresAtivos = setoresAtivos;
+
+      // Cadastro: só ativos
+      criarDropdown(containerCadastro, setoresAtivos);
+
+      // Edição: inicialmente só ativos (será refeito no abrir do modal para incluir os já vinculados)
+      criarDropdown(containerEdicao, setoresAtivos, true);
 
       // Oculta a lista de setores inicialmente
       containerCadastro.querySelector('.dropdown-content').classList.add('hidden');
@@ -470,4 +513,69 @@ function togglePasswordVisibility(fieldId) {
         toggleIcon.classList.remove("fa-eye-slash");
         toggleIcon.classList.add("fa-eye");
     }
+}
+
+// === Drawer: Usuários Inativos ===
+function abrirDrawerUsuariosInativos() {
+  const root = document.getElementById("drawer-inativos-usuarios");
+  const panel = document.getElementById("drawer-panel-usuarios");
+  if (!root || !panel) return;
+  root.classList.remove("hidden");
+  requestAnimationFrame(() => panel.classList.remove("translate-x-full"));
+  listarUsuariosInativos();
+}
+
+function fecharDrawerUsuariosInativos() {
+  const root = document.getElementById("drawer-inativos-usuarios");
+  const panel = document.getElementById("drawer-panel-usuarios");
+  if (!root || !panel) return;
+  panel.classList.add("translate-x-full");
+  setTimeout(() => root.classList.add("hidden"), 300);
+}
+
+function listarUsuariosInativos() {
+  const token = localStorage.getItem("access");
+  const cont = document.getElementById("lista-usuarios-inativos");
+  if (!cont) return;
+
+  cont.innerHTML = `<p class="text-gray-400">Carregando...</p>`;
+
+  fetch(`${window.API_BASE_URL}/api/usuarios/`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  .then(res => res.json())
+  .then(data => {
+    const usuarios = Array.isArray(data?.results) ? data.results
+                    : (Array.isArray(data) ? data : []);
+    const inativos = usuarios.filter(u => !u.is_active);
+
+    cont.innerHTML = "";
+
+    if (inativos.length === 0) {
+      cont.innerHTML = `<p class="text-gray-500">Nenhum usuário inativo.</p>`;
+      return;
+    }
+
+    inativos.forEach(u => {
+      const div = document.createElement("div");
+      div.className = "flex justify-between items-center border rounded px-3 py-2";
+      const setores = (u.setores || []).map(s => s.nome).join(", ") || "-";
+      div.innerHTML = `
+        <div>
+          <div class="font-medium">${u.first_name} <span class="text-xs text-gray-500">(${u.email})</span></div>
+          <div class="text-xs text-gray-600">Perfil: ${u.perfil === "master" ? "Master" : "Gestor"} • Setores: ${setores}</div>
+        </div>
+        <button class="text-green-600 hover:underline" onclick="ativarUsuarioViaDrawer(${u.id})">Ativar</button>
+      `;
+      cont.appendChild(div);
+    });
+  })
+  .catch(err => {
+    console.error(err);
+    cont.innerHTML = `<p class="text-red-500">Erro ao carregar inativos.</p>`;
+  });
+}
+
+function ativarUsuarioViaDrawer(id) {
+  alterarStatusUsuario(id, true, listarUsuariosInativos);
 }

@@ -1,16 +1,21 @@
+from typing import Optional
 from datetime import date
 from dateutil.relativedelta import relativedelta
 from django.db import transaction
+from django.db.models import Q
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from api.models import Indicador, Meta, MetaMensal
+from api.models import Indicador, Meta, MetaMensal, Preenchimento
 from api.utils import parse_mes_inicial, normalize_number
-
 
 def _first_of_month(d: date) -> date:
     return date(d.year, d.month, 1)
 
+def _last_month_first_day(today: Optional[date] = None) -> date:
+    t = today or date.today()
+    # início do mês passado
+    return _first_of_month(t) - relativedelta(months=1)
 
 # =============================
 # 🔧 Base com full_clean
@@ -163,43 +168,43 @@ class IndicadorSerializer(CleanModelSerializer):
     # ---------- Create ----------
     @transaction.atomic
     def create(self, validated_data):
-        """
-        Cria o indicador e as metas iniciais:
-        - Se mes_final for None: cria metas retroativas até o mês atual (aberto).
-        - Se mes_final tiver valor: cria metas até mes_final e remove além (fechado).
-        """
         instance = super().create(validated_data)  # full_clean depois via CleanModelSerializer
 
-        # Define o alvo:
         if instance.mes_final:
-            target_end = _first_of_month(instance.mes_final)
+            target_end = min(_first_of_month(instance.mes_final), _last_month_first_day())
             hard_cap = True
         else:
-            target_end = _first_of_month(date.today())
-            hard_cap = False
+            target_end = _last_month_first_day()
+            hard_cap = True  # força remoção de metas "no futuro", se existirem
 
+        # Garante metas (até mês passado, removendo o futuro)
         self._ensure_metas_ate(instance, target_end, hard_cap)
+
         return instance
 
     # ---------- Update ----------
     @transaction.atomic
     def update(self, instance, validated_data):
-        """
-        Atualiza o indicador e sincroniza metas conforme mes_final atual:
-        - mes_final None  => mantém aberto; garante metas até o mês atual (não remove além).
-        - mes_final setado => garante metas até mes_final e remove além.
-        """
-        instance = super().update(instance, validated_data)  # full_clean depois via CleanModelSerializer
+        old_start = instance.mes_inicial
+        instance = super().update(instance, validated_data)
 
-        # Alvo após o update
         if instance.mes_final:
-            target_end = _first_of_month(instance.mes_final)
+            target_end = min(_first_of_month(instance.mes_final), _last_month_first_day())
             hard_cap = True
         else:
-            target_end = _first_of_month(date.today())
-            hard_cap = False
+            target_end = _last_month_first_day()
+            hard_cap = True  # remove metas >= início do mês atual
 
+        if instance.mes_inicial and (old_start is None or instance.mes_inicial > old_start):
+            start = _first_of_month(instance.mes_inicial)
+            MetaMensal.objects.filter(indicador=instance, mes__lt=start).delete()
+            Preenchimento.objects.filter(indicador=instance).filter(
+                Q(ano__lt=start.year) | (Q(ano=start.year) & Q(mes__lt=start.month))
+            ).delete()
+
+        # Garante metas mensais (até mês passado, removendo o futuro)
         self._ensure_metas_ate(instance, target_end, hard_cap)
+
         return instance
 
 
