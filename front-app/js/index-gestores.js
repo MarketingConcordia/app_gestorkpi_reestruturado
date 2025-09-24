@@ -99,15 +99,16 @@ function verificarAtingimento(tipo, valor, meta) {
 // Formatação
 function formatarValorComTipo(valor, tipo) {
   if (valor == null) return "-";
-  const numero = parseFloat(valor);
-  if (isNaN(numero)) return "-";
+  const numero = Number(valor);
+  if (!Number.isFinite(numero)) return "-";
 
   if (tipo === "monetario") {
-    return `R$ ${numero.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+    return `R$ ${numero.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   } else if (tipo === "percentual") {
-    return `${numero.toFixed(2)}%`;
+    // 15 -> "15,00%" (assumindo que você armazena 15 = 15%)
+    return `${numero.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
   } else {
-    return numero.toLocaleString("pt-BR", { minimumFractionDigits: 2 });
+    return numero.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 }
 
@@ -176,23 +177,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const metasDoIndicador = metasMensais.filter(m => m.indicador === indicador.id);
 
-        const historico = preenchimentosDoIndicador.map(p => {
+        const porMes = new Map();
+        preenchimentosDoIndicador.forEach(p => {
           const mesStr = `${p.ano}-${String(p.mes).padStart(2, '0')}`;
           const metaDoMes = metasDoIndicador.find(m => (m.mes || '').startsWith(mesStr));
           const metaValor = metaDoMes ? parseFloat(metaDoMes.valor_meta) : parseFloat(indicador.valor_meta);
 
-          // Guardamos data como string ISO (YYYY-MM-01) para consistência
-          const dataReferencia = `${p.ano}-${String(p.mes).padStart(2, '0')}-01`;
-
-          return {
+          porMes.set(mesStr, {
             id: p.id,
-            data: dataReferencia, // sempre 'YYYY-MM-01'
+            data: `${mesStr}-01`,  // sempre YYYY-MM-01
             valor: p.valor_realizado,
             meta: metaValor,
             comentario: p.comentario,
             provas: p.arquivo ? [p.arquivo] : []
-          };
+          });
         });
+
+// Array final ordenado (1 ponto por mês)
+const historico = Array.from(porMes.values())
+  .sort((a, b) => String(a.data).localeCompare(String(b.data)));
 
         const ultimoPreenchimento = preenchimentosDoIndicador.at(-1);
 
@@ -541,42 +544,50 @@ function mostrarDetalhes(indicador) {
   const corpoTabela = document.getElementById('corpo-historico-modal');
   corpoTabela.innerHTML = '';
 
+  const porMesModal = new Map();
   (indicador.historico || [])
     .sort((a, b) => String(a.data).localeCompare(String(b.data)))
     .forEach(item => {
-      const [ano, mes] = String(item.data).slice(0,7).split('-'); // 'YYYY-MM-01' -> ['YYYY','MM']
-      const chave = `${ano}-${mes}`;
-
-      const metaMensal = indicador.metas_mensais?.find(m => (m.mes || '').startsWith(chave));
-      const metaFinal = metaMensal ? parseFloat(metaMensal.valor_meta) : parseFloat(item.meta);
-
-      const atingido = verificarAtingimento(indicador.tipo_meta, parseFloat(item.valor), metaFinal);
-      const statusTexto = atingido ? '✅ Atingida' : (indicador.tipo_meta === 'monitoramento' ? '📊 Monitoramento' : '❌ Não Atingida');
-
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="px-4 py-2 border">${mes}/${ano}</td>
-        <td class="px-4 py-2 border">${formatarValorComTipo(item.valor, indicador.tipo_valor)}</td>
-        <td class="px-4 py-2 border">${formatarValorComTipo(metaFinal, indicador.tipo_valor)}</td>
-        <td class="px-4 py-2 border">${statusTexto}</td>
-        <td class="px-4 py-2 border text-center">
-          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirComentarioPopup('${item.comentario?.replace(/'/g, "\\'") || ''}')">Ver</button>
-        </td>
-        <td class="px-4 py-2 border text-center">
-          ${item.provas?.length > 0
-            ? `<button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirProvasPopup('${item.provas[0]}')">Abrir</button>`
-            : '-'}
-        </td>
-        ${podeEditar ? `
-          <td class="px-4 py-2 border text-center">
-            <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})">Editar Valor</button>
-            <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoComentario(${item.id}, '${item.comentario?.replace(/'/g, "\\'") || ''}')">Editar Comentário</button>
-            <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}')">Editar Prova</button>
-          </td>
-        ` : '' }
-      `;
-      corpoTabela.appendChild(tr);
+      const chaveMes = String(item.data).slice(0,7); // YYYY-MM
+      porMesModal.set(chaveMes, item);               // último do mês prevalece
     });
+
+  Array.from(porMesModal.values()).forEach(item => {
+    const [ano, mes] = String(item.data).slice(0,7).split('-');
+    const chave = `${ano}-${mes}`;
+
+    const metaMensal = indicador.metas_mensais?.find(m => (m.mes || '').startsWith(chave));
+    const metaFinal = metaMensal ? parseFloat(metaMensal.valor_meta) : parseFloat(item.meta);
+
+    const atingido = verificarAtingimento(indicador.tipo_meta, parseFloat(item.valor), metaFinal);
+    const statusTexto = atingido ? '✅ Atingida' :
+      (indicador.tipo_meta === 'monitoramento' ? '📊 Monitoramento' : '❌ Não Atingida');
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="px-4 py-2 border">${mes}/${ano}</td>
+      <td class="px-4 py-2 border">${formatarValorComTipo(item.valor, indicador.tipo_valor)}</td>
+      <td class="px-4 py-2 border">${formatarValorComTipo(metaFinal, indicador.tipo_valor)}</td>
+      <td class="px-4 py-2 border">${statusTexto}</td>
+      <td class="px-4 py-2 border text-center">
+        <button class="text-blue-600 underline text-sm hover:text-blue-800"
+                onclick="abrirComentarioPopup('${item.comentario?.replace(/'/g, "\\'") || ''}')">Ver</button>
+      </td>
+      <td class="px-4 py-2 border text-center">
+        ${item.provas?.length > 0
+          ? `<button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirProvasPopup('${item.provas[0]}')">Abrir</button>`
+          : '-'}
+      </td>
+      ${podeEditar ? `
+        <td class="px-4 py-2 border text-center">
+          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})">Editar Valor</button>
+          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoComentario(${item.id}, '${item.comentario?.replace(/'/g, "\\'") || ''}')">Editar Comentário</button>
+          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}')">Editar Prova</button>
+        </td>
+      ` : '' }
+    `;
+    corpoTabela.appendChild(tr);
+  });
 
   // Fechar
   const btnFechar = document.getElementById('fechar-modal');
@@ -798,9 +809,6 @@ function popularMesesDoAnoSelecionado(selectedYear) {
   if (!selectMes) return;
 
   selectMes.innerHTML = `<option value="todos">Todos os Meses</option>`;
-  if (selectedYear === 'todos') {
-    selectMes.innerHTML += `<option value="mes-atual">Mês Atual</option>`;
-  }
 
   let mesesParaAdicionar = new Set();
   if (selectedYear === 'todos') {
@@ -828,12 +836,13 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
   const podeEditar = setoresGestor.some(
     nome => normalizarTexto(nome) === normalizarTexto(indicador.setor_nome)
   );
+
   if (!canvas) return;
 
   const ctx = canvas.getContext('2d');
   corpoTabela.innerHTML = '';
 
-  // Converte inputs YYYY-MM para chave numérica YYYYMM (sem usar Date)
+  // Converte inputs YYYY-MM para inteiro YYYYMM (sem usar Date)
   const toYM = (ymStr) => {
     if (!ymStr) return null;
     const [y, m] = ymStr.split('-').map(Number);
@@ -842,49 +851,87 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
   const iniYM = dataInicio ? toYM(dataInicio) : null;
   const fimYM = dataFim ? toYM(dataFim) : null;
 
+  // 1) filtra por período
   const historicoFiltrado = (indicador.historico || []).filter(item => {
-    const [y, m] = String(item.data).slice(0,7).split('-').map(Number);
+    const [y, m] = String(item.data).slice(0, 7).split('-').map(Number);
     const curr = y * 100 + m;
     if (iniYM && curr < iniYM) return false;
     if (fimYM && curr > fimYM) return false;
     return true;
   });
 
-  historicoFiltrado.forEach(item => {
-    const [ano, mes] = String(item.data).slice(0,7).split('-');
+  // 2) DEDUP por mês (YYYY-MM) — o último registro do mês prevalece
+  const porMesFiltro = new Map();
+  historicoFiltrado
+    .sort((a, b) => String(a.data).localeCompare(String(b.data)))
+    .forEach(item => {
+      const chaveMes = String(item.data).slice(0, 7); // YYYY-MM
+      porMesFiltro.set(chaveMes, item);               // sobrescreve, guardando o último do mês
+    });
+
+  // 3) Array final ordenado sem duplicatas por mês
+  const hist = Array.from(porMesFiltro.values())
+    .sort((a, b) => String(a.data).localeCompare(String(b.data)));
+
+  // 4) monta linhas da tabela
+  hist.forEach(item => {
+    const [ano, mes] = String(item.data).slice(0, 7).split('-');
     const chave = `${ano}-${mes}`;
+
     const metaMensal = indicador.metas_mensais?.find(m => (m.mes || '').startsWith(chave));
     const metaFinal = metaMensal ? parseFloat(metaMensal.valor_meta) : parseFloat(item.meta);
 
     const atingido = verificarAtingimento(indicador.tipo_meta, Number(item.valor), metaFinal);
-    const statusTexto = atingido ? '✅ Atingida' : (indicador.tipo_meta === 'monitoramento' ? '📊 Monitoramento' : '❌ Não Atingida');
+    const statusTexto = atingido ? '✅ Atingida' :
+      (indicador.tipo_meta === 'monitoramento' ? '📊 Monitoramento' : '❌ Não Atingida');
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="px-4 py-2 border">${mes}/${ano}</td>
+
       <td class="px-4 py-2 border">
         ${formatarValorComTipo(item.valor, indicador.tipo_valor)}
-        ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800" onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})"><i class="fas fa-edit"></i></button>` : ''}
+        ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
+                          onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})">
+                          <i class="fas fa-edit"></i>
+                        </button>` : ''}
       </td>
-      <td class="px-4 py-2 border">${formatarValorComTipo(metaFinal, indicador.tipo_valor)}</td>
+
+      <td class="px-4 py-2 border">
+        ${formatarValorComTipo(metaFinal, indicador.tipo_valor)}
+        
+      </td>
+
       <td class="px-4 py-2 border">${statusTexto}</td>
+
       <td class="px-4 py-2 border text-center">
-        <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirComentarioPopup('${item.comentario?.replace(/'/g, "\\'") || ''}')">Ver</button>
-        ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800" onclick="abrirModalEdicaoComentario(${item.id}, '${item.comentario?.replace(/'/g, "\\'") || ''}')"><i class="fas fa-edit"></i></button>` : ''}
+        <button class="text-blue-600 underline text-sm hover:text-blue-800"
+                onclick="abrirComentarioPopup('${(item.comentario ?? '').toString().replace(/'/g, "\\'")}')">Ver</button>
+        ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
+                          onclick="abrirModalEdicaoComentario(${item.id}, '${(item.comentario ?? '').toString().replace(/'/g, "\\'")}')">
+                          <i class="fas fa-edit"></i>
+                        </button>` : ''}
       </td>
+
       <td class="px-4 py-2 border text-center">
-        ${item.provas?.length > 0 ? `<button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirProvasPopup('${item.provas[0]}')">Abrir</button>` : '-'}
-        ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800" onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}')"><i class="fas fa-edit"></i></button>` : ''}
+        ${item.provas?.length > 0
+          ? `<button class="text-blue-600 underline text-sm hover:text-blue-800"
+                     onclick="abrirProvasPopup('${item.provas[0]}')">Abrir</button>`
+          : '-'}
+        ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
+                          onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}')">
+                          <i class="fas fa-edit"></i>
+                        </button>` : ''}
       </td>
     `;
     corpoTabela.appendChild(tr);
   });
 
+  // 5) gráfico (um ponto por mês)
   if (window.graficoDesempenho) window.graficoDesempenho.destroy();
 
-  // Labels do gráfico também como MM/AAAA
-  const labels = historicoFiltrado.map(item => {
-    const [a, m] = String(item.data).slice(0,7).split('-');
+  const labels = hist.map(item => {
+    const [a, m] = String(item.data).slice(0, 7).split('-');
     return `${m}/${a}`;
   });
 
@@ -895,7 +942,7 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
       datasets: [
         {
           label: 'Valor',
-          data: historicoFiltrado.map(item => item.valor),
+          data: hist.map(item => item.valor),
           borderColor: '#3b82f6',
           backgroundColor: 'rgba(59, 130, 246, 0.1)',
           tension: 0.3,
@@ -903,11 +950,11 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
         },
         {
           label: 'Meta',
-          data: historicoFiltrado.map(item => {
-            const [a, m] = String(item.data).slice(0,7).split('-');
+          data: hist.map(item => {
+            const [a, m] = String(item.data).slice(0, 7).split('-');
             const chave = `${a}-${m}`;
-            const metaMensal = indicador.metas_mensais?.find(x => (x.mes || '').startsWith(chave));
-            return metaMensal ? parseFloat(metaMensal.valor_meta) : parseFloat(item.meta);
+            const mMensal = indicador.metas_mensais?.find(x => (x.mes || '').startsWith(chave));
+            return mMensal ? parseFloat(mMensal.valor_meta) : parseFloat(item.meta);
           }),
           borderColor: '#ef4444',
           borderDash: [5, 5],
@@ -1006,10 +1053,22 @@ function aplicarFiltros() {
     indicadoresParaRenderizar.push(indicadorPeriodo);
   });
 
+  // Filtro por status (inclui 'monitoramento' e exclui monitoramento dos demais)
   if (statusSelecionado !== 'todos') {
+    const v = String(statusSelecionado || '').toLowerCase();
     indicadoresParaRenderizar = indicadoresParaRenderizar.filter(ind => {
-      if (statusSelecionado === 'atingidos') return ind.atingido === true;
-      if (statusSelecionado === 'nao-atingidos') return ind.atingido === false;
+      if (v === 'monitoramento') {
+        // Somente indicadores cujo tipo é monitoramento
+        return ind.tipo_meta === 'monitoramento';
+      }
+      if (v === 'atingidos') {
+        // Exclui monitoramento deste grupo
+        return ind.tipo_meta !== 'monitoramento' && ind.atingido === true;
+      }
+      if (v === 'nao-atingidos') {
+        // Exclui monitoramento deste grupo
+        return ind.tipo_meta !== 'monitoramento' && ind.atingido === false;
+      }
       return true;
     });
   }

@@ -8,11 +8,19 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="loader.css">
+    <script src="js/loader.js" defer></script>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body>
+    <!-- GLOBAL LOADER (coloque logo depois da tag <body>) -->
+    <div id="global-loader" aria-live="polite" aria-busy="true" hidden>
+    <div class="gl-backdrop"></div>
+    <div class="gl-spinner" role="status" aria-label="Carregando"></div>
+    </div>
+
     <div class="flex h-screen bg-gray-100">
         <div id="sidebar" class="sidebar bg-gradient-to-b from-blue-900 to-blue-800 text-white py-4 flex flex-col">
             <div class="px-4 py-2 flex items-center ">
@@ -119,6 +127,7 @@
                             <option value="todos">Todos</option>
                             <option value="atingidos">Atingidos</option>
                             <option value="nao-atingidos">Não Atingidos</option>
+                            <option value="monitoramento">Monitoramento</option>
                         </select>
                     </div>
                     <div class="flex items-end">

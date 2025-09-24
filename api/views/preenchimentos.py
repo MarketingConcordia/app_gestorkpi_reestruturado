@@ -5,7 +5,7 @@ from django.utils.timezone import make_aware, now
 from django.db import IntegrityError
 from django.db.models import F, Q, Exists, OuterRef
 from django.db.models.functions import ExtractMonth, ExtractYear
-from decimal import Decimal
+from rest_framework.exceptions import ValidationError
 
 from rest_framework import viewsets, generics, status, serializers
 from rest_framework.decorators import api_view, permission_classes, action
@@ -274,6 +274,44 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
         )
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'], url_path='resolve-id', permission_classes=[IsAuthenticated])
+    def resolve_id(self, request):
+        """
+        Retorna o ID do Preenchimento do usuário para (indicador, ano, mes).
+        Se não existir, cria um pendente (sem valor) e retorna o ID.
+        """
+        try:
+            indicador_id = int(request.data.get('indicador'))
+            ano = int(request.data.get('ano'))
+            mes = int(request.data.get('mes'))
+        except (TypeError, ValueError):
+            raise ValidationError("Campos 'indicador', 'ano' e 'mes' são obrigatórios e numéricos.")
+
+        indicador = Indicador.objects.filter(pk=indicador_id).first()
+        if not indicador:
+            raise ValidationError("Indicador inválido.")
+
+        # Permissão do usuário
+        if not self._user_can_write_on(request.user, indicador):
+            raise PermissionDenied("Você não tem permissão para preencher este indicador.")
+
+        # Normaliza competência pro 1º dia do mês
+        dt_comp = make_aware(datetime(ano, mes, 1, 0, 0, 0))
+        origem = (request.data.get('origem') or 'manual')
+
+        obj, _created = Preenchimento.objects.get_or_create(
+            indicador_id=indicador_id,
+            ano=ano,
+            mes=mes,
+            preenchido_por=request.user,
+            defaults={
+                'confirmado': False,
+                'data_preenchimento': dt_comp,
+                'origem': origem,
+            }
+        )
+        return Response({'id': obj.id}, status=status.HTTP_200_OK)
 
 # =========================
 #  LIST/CREATE auxiliares

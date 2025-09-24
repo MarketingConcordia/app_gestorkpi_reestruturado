@@ -5,6 +5,9 @@ const tipoPorIndicador = new Map();
 const metaPadraoPorIndicador = new Map();
 const tipoMetaPorIndicador   = new Map();
 
+// ✅ periodicidade (em meses) por indicador (1 = mensal, 3 = trimestral, etc.)
+const periodicidadePorIndicador = new Map();
+
 // 👇 cache das metas mensais
 let __metasMensaisCache = null;
 
@@ -58,20 +61,26 @@ function preencherIndicadoresGestor() {
           .filter(i => i.ativo !== false && i.ativo !== 0 && String(i.ativo ?? 'true').toLowerCase() !== 'false');
 
         ativos.forEach(indicador => {
-            const opt = document.createElement("option");
-            opt.value = indicador.id;
-            opt.textContent = indicador.nome;
-            select.appendChild(opt);
+          const opt = document.createElement("option");
+          opt.value = indicador.id;
+          opt.textContent = indicador.nome;
+          select.appendChild(opt);
 
-            // tipo
-            tipoPorIndicador.set(indicador.id, indicador.tipo_valor || 'numeral');
+          // tipo
+          tipoPorIndicador.set(indicador.id, indicador.tipo_valor || 'numeral');
 
-            // 👇 meta padrão e tipo_meta para completar meses vazios
-            metaPadraoPorIndicador.set(indicador.id, Number(indicador.valor_meta ?? 0));
-            tipoMetaPorIndicador.set(indicador.id, indicador.tipo_meta || 'crescente');
+          // 👇 meta padrão e tipo_meta para completar meses vazios
+          metaPadraoPorIndicador.set(indicador.id, Number(indicador.valor_meta ?? 0));
+          tipoMetaPorIndicador.set(indicador.id, indicador.tipo_meta || 'crescente');
 
-            // ✅ registra como permitido para este gestor (apenas ativos entram)
-            window.__indicadoresPermitidos.add(indicador.id);
+          // ✅ periodicidade em meses (campo comum: indicador.periodicidade). Default = 1
+          periodicidadePorIndicador.set(
+            indicador.id,
+            Number(indicador.periodicidade ?? 1)
+          );
+
+          // ✅ registra como permitido para este gestor (apenas ativos entram)
+          window.__indicadoresPermitidos.add(indicador.id);
         });
     })
     .catch(err => {
@@ -126,6 +135,41 @@ function enumMonthsInclusive(iniYYYYMM, fimYYYYMM) {
   return out;
 }
 
+// diferença de meses: b - a (ambos 'YYYY-MM')
+function diffMeses(aYYYYMM, bYYYYMM) {
+  const [ay, am] = aYYYYMM.split('-').map(Number);
+  const [by, bm] = bYYYYMM.split('-').map(Number);
+  return (by * 12 + bm) - (ay * 12 + am);
+}
+
+// filtra lista de meses para manter só os alinhados com a periodicidade a partir do âncora
+function filtrarMesesAlinhados(meses, anchorYYYYMM, periodicidade) {
+  const per = Number(periodicidade || 1);
+  if (per <= 1 || !anchorYYYYMM) return meses.slice();
+  return meses.filter(mm => {
+    const d = diffMeses(anchorYYYYMM, mm);
+    return d >= 0 && d % per === 0;
+  });
+}
+
+// encontra o primeiro mês (YYYY-MM) de um indicador na lista vinda da API
+function encontrarAnchorPorIndicador(listaPreench, indicadorId) {
+  const items = (Array.isArray(listaPreench) ? listaPreench : (listaPreench?.results || []))
+    .filter(p => p.indicador === Number(indicadorId));
+  if (!items.length) return null;
+  items.sort((a,b) => a.ano !== b.ano ? a.ano - b.ano : a.mes - b.mes);
+  return ymStr(items[0].ano, items[0].mes);
+}
+
+// Normaliza texto para comparar nomes de setor com segurança
+function normalizarTexto(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim();
+}
+
 async function ensureMetasMensaisCache() {
   if (Array.isArray(__metasMensaisCache)) return __metasMensaisCache;
   const token = localStorage.getItem("access");
@@ -163,32 +207,24 @@ async function carregarPreenchimentos() {
   }
 
   let url = `${window.API_BASE_URL}/api/preenchimentos/`;
-  if (indicadorId) url += `?indicador=${indicadorId}`;
+  if (indicadorId) url += `?indicador=${encodeURIComponent(indicadorId)}`;
 
   try {
-    // garante cache de metas mensais em paralelo
     const [res] = await Promise.all([
       fetch(url, { headers: { "Authorization": `Bearer ${token}` } }),
       ensureMetasMensaisCache()
     ]);
 
-    const text = await res.text();
-    if (!text) {
-      console.warn("Resposta vazia da API.");
-      aplicarFiltros([], __metasMensaisCache);
-      return;
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status} ao buscar ${url}`);
 
-    const data = JSON.parse(text);
+    const data = await res.json();
     const preenchimentos = Array.isArray(data) ? data : (data.results || []);
 
-    // ✅ 1º: mantém só os indicadores permitidos do gestor
     const permitidos = window.__indicadoresPermitidos || new Set();
     const soDoGestor = preenchimentos.filter(p => permitidos.has(p.indicador));
 
-    // ✅ 2º: se um indicador específico foi selecionado, filtra por ele também
     const preenchimentosFiltrados = indicadorId
-      ? soDoGestor.filter(p => p.indicador === parseInt(indicadorId))
+      ? soDoGestor.filter(p => p.indicador === Number(indicadorId))
       : soDoGestor;
 
     aplicarFiltros(preenchimentosFiltrados, __metasMensaisCache);
@@ -211,10 +247,8 @@ function aplicarFiltros(preenchimentos, metasMensais) {
     return;
   }
 
-  // janela de meses completa (inclusive)
   const mesesOrdenados = enumMonthsInclusive(dataInicialStr, dataFinalStr);
 
-  // Filtro base
   const [anoIni, mesIni] = dataInicialStr.split("-").map(Number);
   const [anoFim, mesFim] = dataFinalStr.split("-").map(Number);
   const inicioTimestamp  = new Date(anoIni, mesIni - 1).getTime();
@@ -222,24 +256,71 @@ function aplicarFiltros(preenchimentos, metasMensais) {
 
   const lista = Array.isArray(preenchimentos) ? preenchimentos : (preenchimentos?.results || []);
 
+  // nomes dos setores do gestor (strings ou objetos com 'nome')
+  const setoresUsuario = JSON.parse(localStorage.getItem("setores_usuario") || "[]");
+  const setoresGestorNomes = setoresUsuario
+    .map(s => s?.nome ?? s)
+    .filter(Boolean)
+    .map(normalizarTexto);
+
   const baseFiltrados = lista.filter(p => {
     const t = new Date(p.ano, p.mes - 1).getTime();
     const condDataIni   = t >= inicioTimestamp;
     const condDataFim   = t <= fimTimestamp;
-    const condIndicador = indicadorSelecionado ? p.indicador === parseInt(indicadorSelecionado) : true;
 
-    let condStatus = true;
-    if (statusSelecionado === "atingidos") {
-      condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Atingida";
-    } else if (statusSelecionado === "nao-atingidos") {
-      condStatus = calcularStatus(p.valor_realizado, p.meta, p.tipo_meta) === "Não atingida";
+    const condIndicador = indicadorSelecionado
+      ? p.indicador === Number(indicadorSelecionado)
+      : true;
+
+    // 🔒 Indicadores do gestor via /indicadores/meus/
+    const permitidos = window.__indicadoresPermitidos || new Set();
+    const condGestorIndicador = permitidos.has(p.indicador);
+
+    // 🔒 E também limitar pelos SETORES do gestor
+    const setorDoRegistro = normalizarTexto(p.setor_nome || p.setor?.nome || "");
+    const condGestorSetor = setoresGestorNomes.length
+      ? setoresGestorNomes.includes(setorDoRegistro)
+      : true;
+
+    const v = String(statusSelecionado || "").toLowerCase();
+
+    // tipo de meta do indicador (fonte do próprio indicador, como no index.js)
+    const tipoMeta = String(
+      (p.tipo_meta ?? tipoMetaPorIndicador.get(p.indicador) ?? "")
+    ).toLowerCase();
+
+    const isMonitoramento = (tipoMeta === "monitoramento");
+
+    // meta efetiva do período (meta mensal > padrão). metaPara já faz fallback de padrão.
+    const yyyyMM      = ymStr(p.ano, p.mes);
+    const metaEfetiva = metaPara(p.indicador, yyyyMM, metasMensais);
+
+    // atingimento para não-monitoramento
+    const valorOk = (p.valor_realizado != null && !Number.isNaN(Number(p.valor_realizado)));
+    const metaOk  = (metaEfetiva != null && !Number.isNaN(Number(metaEfetiva)));
+
+    let atingidoBool = false;
+    if (!isMonitoramento && valorOk && metaOk) {
+      if (tipoMeta === "crescente") {
+        atingidoBool = Number(p.valor_realizado) >= Number(metaEfetiva);
+      } else if (tipoMeta === "decrescente") {
+        atingidoBool = Number(p.valor_realizado) <= Number(metaEfetiva);
+      }
     }
 
-    const condGestor = !window.__indicadoresPermitidos || window.__indicadoresPermitidos.has(p.indicador);
-    return condIndicador && condDataIni && condDataFim && condStatus && condGestor;
+    // filtro de status igual ao index.js
+    let condStatus = true;
+    if (v === "monitoramento") {
+      condStatus = isMonitoramento;
+    } else if (v === "atingidos") {
+      condStatus = !isMonitoramento && atingidoBool;
+    } else if (v === "nao-atingidos" || v === "não-atingidos") {
+      condStatus = !isMonitoramento && !atingidoBool;
+    }
+
+    return condIndicador && condDataIni && condDataFim && condGestorIndicador && condGestorSetor && condStatus;
   });
 
-  // Agrupa por indicador_nome e completa meses faltantes com valor=0
   const agrupado = {};
   baseFiltrados.forEach(p => {
     const chaveMes = ymStr(p.ano, p.mes);
@@ -247,30 +328,42 @@ function aplicarFiltros(preenchimentos, metasMensais) {
     if (!indNome) return;
 
     if (!agrupado[indNome]) agrupado[indNome] = {};
+
+    const metaMesTabela = metaPara(p.indicador, chaveMes, metasMensais) ?? p.meta;
+    const tipoMetaTbl   = (p.tipo_meta ?? tipoMetaPorIndicador.get(p.indicador) ?? 'crescente');
+
     agrupado[indNome][chaveMes] = {
       valor:  p.valor_realizado,
-      meta:   p.meta,
-      status: calcularStatus(p.valor_realizado, p.meta ?? 0, p.tipo_meta),
+      meta:   metaMesTabela,
+      status: calcularStatus(p.valor_realizado, metaMesTabela, tipoMetaTbl),
       tipo_valor: p.tipo_valor ?? tipoPorIndicador.get(p.indicador) ?? 'numeral',
       _id: p.indicador
     };
   });
 
-  // completa meses vazios
   Object.keys(agrupado).forEach(indNome => {
     const porMes = agrupado[indNome];
-    // pega um id conhecido deste indicador (de qualquer mês existente)
     const algumId = Object.values(porMes).find(x => x && x._id != null)?._id ?? null;
 
-    mesesOrdenados.forEach(yyyyMM => {
+    // periodicidade deste indicador (1 = mensal, 3 = trimestral, etc.)
+    const per = periodicidadePorIndicador.get(algumId) ?? 1;
+
+    // âncora: 1º mês do indicador na base (se não achar, usa dataInicialStr)
+    const anchor = encontrarAnchorPorIndicador(preenchimentos, algumId) || dataInicialStr;
+
+    // meses em que ESTE indicador realmente "existe" (alinhados à periodicidade)
+    const mesesPermitidos = filtrarMesesAlinhados(mesesOrdenados, anchor, per);
+
+    // preenche SOMENTE os meses permitidos
+    mesesPermitidos.forEach(yyyyMM => {
       if (!porMes[yyyyMM]) {
         const meta      = metaPara(algumId, yyyyMM, metasMensais);
         const tipoValor = tipoPorIndicador.get(algumId) ?? 'numeral';
         const tMeta     = tipoMetaPara(algumId);
-        const status    = calcularStatus(0, meta, tMeta); // "Meta não definida" se meta=null
+        const status    = calcularStatus(0, meta, tMeta);
 
         porMes[yyyyMM] = {
-          valor:  0,          // 👈 preenchimento virtual
+          valor:  0,
           meta:   meta,
           status: status,
           tipo_valor: tipoValor
@@ -281,8 +374,6 @@ function aplicarFiltros(preenchimentos, metasMensais) {
 
   renderizarHistorico(agrupado, mesesOrdenados);
 
-  // mostra/oculta container
-  const tbody = document.getElementById("historico-body");
   const historicoDiv = document.querySelector(".bg-white.rounded.shadow.p-4.mt-8");
   if (historicoDiv) {
     const temLinhas = Object.keys(agrupado).length > 0 && mesesOrdenados.length > 0;
@@ -315,25 +406,35 @@ function renderizarHistorico(dadosAgrupados, mesesOrdenados) {
     let row = `<td class="px-4 py-2 font-semibold">${indicador}</td>`;
 
     mesesOrdenados.forEach(mes => {
-      const dados = dadosAgrupados[indicador][mes]; // garantido pelo preenchimento virtual
-      const status = String(dados.status || "").toLowerCase();
-      const corStatus = status === "atingida"
-        ? "text-green-600"
-        : (status === "não atingida" || status === "nao atingida")
-          ? "text-red-600"
-          : "text-gray-600";
+      const dados = (dadosAgrupados[indicador] || {})[mes];
 
-      const icone = status === "atingida"
-        ? "✅"
-        : (status === "não atingida" || status === "nao atingida")
-          ? "❌"
-          : "📊";
+      if (!dados) {
+        // mês não aplicável ao indicador (fora da periodicidade) OU sem dado algum
+        row += `
+          <td class="px-4 py-2 border-l border-gray-300">—</td>
+          <td class="px-4 py-2">—</td>
+          <td class="px-4 py-2 text-gray-500">—</td>
+        `;
+      } else {
+        const status = String(dados.status || "").toLowerCase();
+        const corStatus = status === "atingida"
+          ? "text-green-600"
+          : (status === "não atingida" || status === "nao atingida")
+            ? "text-red-600"
+            : "text-gray-600";
 
-      row += `
-        <td class="px-4 py-2 border-l border-gray-300">${formatarValor(dados.valor, dados.tipo_valor)}</td>
-        <td class="px-4 py-2">${formatarValor(dados.meta,  dados.tipo_valor)}</td>
-        <td class="px-4 py-2 ${corStatus}">${icone} ${dados.status || "Sem dados"}</td>
-      `;
+        const icone = status === "atingida"
+          ? "✅"
+          : (status === "não atingida" || status === "nao atingida")
+            ? "❌"
+            : "📊";
+
+        row += `
+          <td class="px-4 py-2 border-l border-gray-300">${formatarValor(dados.valor, dados.tipo_valor)}</td>
+          <td class="px-4 py-2">${formatarValor(dados.meta,  dados.tipo_valor)}</td>
+          <td class="px-4 py-2 ${corStatus}">${icone} ${dados.status || "Sem dados"}</td>
+        `;
+      }
     });
 
     tbody.innerHTML += `<tr>${row}</tr>`;
@@ -341,12 +442,18 @@ function renderizarHistorico(dadosAgrupados, mesesOrdenados) {
 }
 
 function calcularStatus(valor, meta, tipo) {
-    if (valor == null) return "Sem dados";
-    if (meta == null) return "Meta não definida";
+  const t = String(tipo || "").toLowerCase();
 
-    if (tipo === "crescente") return valor >= meta ? "Atingida" : "Não atingida";
-    if (tipo === "decrescente") return valor <= meta ? "Atingida" : "Não atingida";
-    return "Monitoramento";
+  // Para monitoramento, sempre exibir "Monitoramento"
+  if (t === "monitoramento") return "Monitoramento";
+
+  // Para avaliação (crescente/decrescente), precisamos de valor e meta
+  if (valor == null || meta == null) return "Sem dados";
+
+  if (t === "crescente")   return Number(valor) >= Number(meta) ? "Atingida" : "Não atingida";
+  if (t === "decrescente") return Number(valor) <= Number(meta) ? "Atingida" : "Não atingida";
+
+  return "Sem dados";
 }
 
 function mesPtBr(mes) {

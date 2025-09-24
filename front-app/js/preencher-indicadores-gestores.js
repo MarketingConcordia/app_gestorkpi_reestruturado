@@ -14,11 +14,9 @@ let __setoresUsuarioIdsStr = new Set();   // String (espelha os mesmos IDs)
 
 // Extrai o ID do setor de um item do endpoint de pendentes, tolerando formatos diferentes
 function extrairSetorIdDoItem(item) {
-  // Tenta campos comuns e variações aninhadas que costumam aparecer
   const candidatos = [
     item?.setor,
     item?.setor?.id,
-    item?.setor,                 // às vezes vem o id direto neste campo
     item?.indicador_setor,
     item?.indicador?.setor,
     item?.indicador?.setor?.id,
@@ -28,6 +26,104 @@ function extrairSetorIdDoItem(item) {
     if (c !== undefined && c !== null && c !== "") return c;
   }
   return null;
+}
+
+function normalizeDecimalString(s) {
+  if (s == null) return '';
+  let v = ('' + s).trim().replace(/[R$\s%]/g, '');
+  // "1.234,56" -> "1234.56"
+  if (v.includes(',') && /\.\d{3}/.test(v)) v = v.replace(/\./g, '').replace(',', '.');
+  else if (v.includes(',')) v = v.replace(',', '.');
+  return v;
+}
+
+function validarArquivo(arquivo) {
+  const maxBytes = 2 * 1024 * 1024; // 2MB
+  const okExt = ['pdf','jpg','jpeg','png','xlsx'];
+  if (arquivo.size > maxBytes) throw new Error("O arquivo é muito grande. Máximo permitido: 2MB.");
+  const ext = (arquivo.name.split('.').pop() || '').toLowerCase();
+  if (!okExt.includes(ext)) throw new Error("Extensão de arquivo não permitida (PDF/JPG/PNG/XLSX).");
+}
+
+function montarFormDataSeguro() {
+  if (!indicadorSelecionado) throw new Error("Indicador não selecionado.");
+
+  const valorRaw = document.getElementById('valor').value;
+  if (valorRaw == null || String(valorRaw).trim() === '') {
+    // Se quiser permitir pendente (sem valor), remova esta validação
+    throw new Error("Preencha o valor.");
+  }
+
+  const valorNorm = normalizeDecimalString(valorRaw);
+  if (valorNorm === '' || Number.isNaN(Number(valorNorm))) {
+    throw new Error("Valor inválido. Use 1234,56 ou 1234.56.");
+  }
+
+  const comentario = document.getElementById('comentario').value?.trim();
+  const origem = document.getElementById('origem').value?.trim();
+  const arquivo = document.getElementById('provas').files[0];
+  if (arquivo) validarArquivo(arquivo);
+
+  const fd = new FormData();
+  // indicador/mes/ano vão via resolve-id (não precisa enviar de novo aqui)
+  fd.append('valor_realizado', valorNorm); // "1234.56"
+  if (comentario) fd.append('comentario', comentario);
+  if (origem) fd.append('origem', origem);
+  if (arquivo) fd.append('arquivo', arquivo, arquivo.name);
+
+  return fd;
+}
+
+async function extrairErroHttp(res) {
+  let payload = null, text = null;
+  try { payload = await res.clone().json(); } catch {}
+  if (!payload) { try { text = await res.clone().text(); } catch {} }
+
+  const raw = payload || text || null;
+  let msg = `Falha (${res.status})`;
+
+  if (payload) {
+    if (typeof payload.detail === 'string') {
+      msg = payload.detail;
+    } else {
+      try {
+        const flat = Object.values(payload).flat().join('\n');
+        if (flat) msg = flat;
+      } catch {
+        msg = JSON.stringify(payload);
+      }
+    }
+  } else if (typeof text === 'string' && text.trim()) {
+    msg = text.length > 200 ? text.slice(0, 200) + '...' : text;
+  }
+
+  // normalizações úteis
+  if (/Já existe preenchimento/i.test(msg)) {
+    msg = "Já existe preenchimento para este indicador/mês/ano por este usuário.";
+  }
+  if (/Extens[aã]o de arquivo n[aã]o permitida/i.test(msg)) {
+    msg = "Extensão de arquivo não permitida (apenas PDF/JPG/PNG/XLSX).";
+  }
+  return { message: msg, raw };
+}
+
+async function resolverPreenchimentoId(indicadorId, mes, ano, origem = 'manual') {
+  const token = localStorage.getItem('access');
+  const res = await fetch(`${window.API_BASE_URL}/api/preenchimentos/resolve-id/`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ indicador: indicadorId, mes, ano, origem })
+  });
+  if (!res.ok) {
+    const { message, raw } = await extrairErroHttp(res);
+    console.error('Falha no resolve-id:', raw);
+    throw new Error(message || 'Falha ao resolver ID do preenchimento.');
+  }
+  const data = await res.json();
+  return data?.id;
 }
 
 // =============================
@@ -248,65 +344,55 @@ function fecharModal() {
 // =============================
 // 🔹 Submissão do preenchimento
 // =============================
+let __isSubmitting = false;
+
 document.getElementById('formPreenchimento').addEventListener('submit', async function (e) {
   e.preventDefault();
+  if (__isSubmitting) return;
+  __isSubmitting = true;
+
+  const submitBtn = this.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
 
   const token = localStorage.getItem('access');
-  const valor = document.getElementById('valor').value;
-  const comentario = document.getElementById('comentario').value;
-  const origem = document.getElementById('origem').value;
-  const arquivo = document.getElementById('provas').files[0];
-
-  if (!indicadorSelecionado || !valor) {
-    alert("Preencha os campos obrigatórios.");
-    return;
-  }
-
-  if (arquivo && arquivo.size > 2 * 1024 * 1024) {
-    alert("O arquivo é muito grande. Máximo permitido: 2MB.");
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append('indicador', indicadorSelecionado.id);
-  formData.append('valor_realizado', valor);
-  formData.append('mes', indicadorSelecionado.mes);
-  formData.append('ano', indicadorSelecionado.ano);
-
-  if (comentario) formData.append('comentario', comentario);
-  if (origem) formData.append('origem', origem);
-  if (arquivo) formData.append('arquivo', arquivo);
 
   try {
-    const res = await fetch(`${window.API_BASE_URL}/api/preenchimentos/`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` },
+    // monta FormData (normaliza número, valida arquivo, evita campos vazios)
+    const formData = montarFormDataSeguro();
+
+    // 1) resolve (ou cria) o ID do preenchimento para (indicador, mes, ano)
+    const id = await resolverPreenchimentoId(
+      indicadorSelecionado.id,
+      indicadorSelecionado.mes,
+      indicadorSelecionado.ano
+    );
+
+    // 2) PATCH no recurso específico
+    const res = await fetch(`${window.API_BASE_URL}/api/preenchimentos/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}` }, // NÃO definir Content-Type
       body: formData
     });
 
     if (!res.ok) {
-      let msg = "Erro ao salvar o preenchimento.";
-      try {
-        const err = await res.json();
-        msg = Object.values(err).flat().join('\n');
-      } catch {
-        msg = "Erro interno no servidor (500).";
-      }
-      throw new Error(msg);
+      const { message, raw } = await extrairErroHttp(res);
+      console.error('Falha no PATCH /preenchimentos/{id}:', raw);
+      throw new Error(message);
     }
 
     alert('Preenchimento salvo com sucesso!');
     fecharModal();
 
-    // Recarrega os dados para refletir a pendência resolvida
+    // Atualiza UI
     await carregarPreenchimentos();
-    // Opcional: recarregar setores do usuário (não deve mudar, mas mantém consistência de estado)
-    // await carregarUsuarioSetores();
     await carregarIndicadores();
 
   } catch (err) {
     console.error("Erro detalhado:", err);
-    alert("Erro ao salvar o preenchimento:\n" + err.message);
+    alert("Erro ao salvar o preenchimento:\n" + (err?.message || 'Falha desconhecida'));
+  } finally {
+    __isSubmitting = false;
+    if (submitBtn) submitBtn.disabled = false;
   }
 });
 
@@ -314,8 +400,7 @@ document.getElementById('formPreenchimento').addEventListener('submit', async fu
 // 🔹 Inicialização
 // =============================
 window.onload = async () => {
-  // Ordem importa: setores do usuário antes de filtrar pendentes
-  await carregarPreenchimentos();
-  await carregarUsuarioSetores();   // popula __setoresUsuarioIds/__setoresUsuarioIdsStr
-  await carregarIndicadores();      // lista só pendentes dos setores do gestor logado
+  await carregarUsuarioSetores();   // 1) saber setores do usuário
+  await carregarPreenchimentos();   // 2) o que já foi preenchido
+  await carregarIndicadores();      // 3) filtra e mostra pendentes
 };

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils.timezone import now

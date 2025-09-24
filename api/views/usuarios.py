@@ -1,7 +1,10 @@
+from django.db import IntegrityError
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import viewsets, status, serializers
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 
 from api.models import Usuario, LogDeAcao
 from api.serializers import UsuarioSerializer
@@ -16,60 +19,104 @@ class UsuarioViewSet(viewsets.ModelViewSet):
 
     # --- Hardened endpoints: nunca devolver HTML para o front ---
     def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
         try:
-            return super().create(request, *args, **kwargs)
-        except serializers.ValidationError:
-            # DRF já formata 400 JSON corretamente
-            raise
-        except Exception as e:
-            # Evita 500/HTML
-            return Response({"detail": f"Falha ao criar usuário: {str(e)}"}, status=400)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        except ValidationError as e:
+            # Erros por campo vindos do serializer (ex.: {"email":["já existe"], "password":["curta"]})
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError as e:
+            msg = str(e).lower()
+            # Unique em email/username → erro no campo correspondente
+            if "unique" in msg and "email" in msg:
+                return Response({"email": ["Já existe um usuário com este e-mail."]}, status=status.HTTP_400_BAD_REQUEST)
+            if "unique" in msg and "username" in msg:
+                return Response({"username": ["Já existe um usuário com este username."]}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Não foi possível criar o usuário."}, status=status.HTTP_400_BAD_REQUEST)
 
     def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
         try:
-            return super().update(request, *args, **kwargs)
-        except serializers.ValidationError:
-            raise
-        except Exception as e:
-            return Response({"detail": f"Falha ao atualizar usuário: {str(e)}"}, status=400)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError as e:
+            msg = str(e).lower()
+            if "unique" in msg and "email" in msg:
+                return Response({"email": ["Já existe um usuário com este e-mail."]}, status=status.HTTP_400_BAD_REQUEST)
+            if "unique" in msg and "username" in msg:
+                return Response({"username": ["Já existe um usuário com este username."]}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Não foi possível atualizar o usuário."}, status=status.HTTP_400_BAD_REQUEST)
 
     def destroy(self, request, *args, **kwargs):
         try:
-            return super().destroy(request, *args, **kwargs)
+            super().destroy(request, *args, **kwargs)
+            return Response(status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
-            return Response({"detail": f"Falha ao excluir usuário: {str(e)}"}, status=400)
+            return Response({"detail": f"Falha ao excluir usuário: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(
         detail=True,
         methods=["post"],
         url_path="trocar_senha",
-        permission_classes=[IsAuthenticated]  # 🔒 Master pode trocar de qualquer usuário; Gestor só a própria
+        permission_classes=[IsAuthenticated]
     )
     def trocar_senha(self, request, pk=None):
         """
-        - Master → pode alterar a senha de qualquer usuário
-        - Gestor → só pode alterar a própria senha
+        - Master → pode alterar a senha de qualquer usuário (NÃO exige senha atual do alvo)
+        - Gestor → só pode alterar a própria senha (EXIGE senha atual)
+        Retorna erros por campo: {"senha_atual": [...], "nova_senha": [...]}.
         """
-        usuario = self.get_object()
+        usuario_alvo = self.get_object()
+        solicitante = request.user
+        is_master = (solicitante.perfil == "master")
+        is_self = (solicitante.id == usuario_alvo.id)
 
-        # 🔒 Se não for Master, só pode alterar a própria senha
-        if request.user.perfil == "gestor" and request.user.id != usuario.id:
-            return Response({"erro": "Você não tem permissão para alterar a senha de outro usuário."}, status=403)
+        # 🔒 Permissão
+        if not is_master and not is_self:
+            return Response({"detail": "Você não tem permissão para alterar a senha de outro usuário."},
+                            status=status.HTTP_403_FORBIDDEN)
 
         senha_atual = request.data.get("senha_atual")
         nova_senha = request.data.get("nova_senha")
+        confirmar  = request.data.get("confirmar_senha")
 
-        if not senha_atual or not nova_senha:
-            return Response({"erro": "Campos obrigatórios não fornecidos."}, status=400)
+        # Campos obrigatórios
+        errors = {}
+        if not nova_senha:
+            errors["nova_senha"] = ["Campo obrigatório."]
+        if confirmar is not None and nova_senha and confirmar != nova_senha:
+            errors["confirmar_senha"] = ["A confirmação não confere."]
+        # Gestor (ou auto alteração) precisa informar senha_atual correta
+        if not is_master or is_self:
+            if not senha_atual:
+                errors["senha_atual"] = ["Campo obrigatório."]
+            elif not usuario_alvo.check_password(senha_atual):
+                errors["senha_atual"] = ["Senha atual incorreta."]
 
-        if not usuario.check_password(senha_atual):
-            return Response({"erro": "Senha atual incorreta."}, status=400)
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
-        usuario.set_password(nova_senha)
-        usuario.save()
+        # Validação de complexidade da nova senha
+        try:
+            validate_password(nova_senha, user=usuario_alvo)
+        except ValidationError as e:
+            # DRF ValidationError contém lista de mensagens
+            return Response({"nova_senha": e.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Persistir
+        usuario_alvo.set_password(nova_senha)
+        usuario_alvo.save()
 
         LogDeAcao.objects.create(
-            usuario=request.user,
-            acao=f"Alterou a senha do usuário '{usuario.first_name or usuario.email}'"
+            usuario=solicitante,
+            acao=f"Alterou a senha do usuário '{usuario_alvo.first_name or usuario_alvo.email}'"
         )
-        return Response({"mensagem": "Senha alterada com sucesso."}, status=200)
+        return Response({"mensagem": "Senha alterada com sucesso."}, status=status.HTTP_200_OK)

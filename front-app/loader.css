@@ -1,0 +1,32 @@
+/* Overlay */
+#global-loader[hidden] { display: none !important; }
+#global-loader { position: fixed; inset: 0; z-index: 9999; pointer-events: none; }
+#global-loader .gl-backdrop {
+  position: absolute; inset: 0; background: rgba(0,0,0,.28); backdrop-filter: blur(1px);
+}
+#global-loader .gl-spinner {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 64px; height: 64px; border-radius: 50%;
+  border: 6px solid rgba(255,255,255,0.35); border-top-color: #fff; animation: gl-spin 0.8s linear infinite;
+  box-shadow: 0 0 20px rgba(0,0,0,.2);
+}
+@keyframes gl-spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+/* Travar cliques quando carregando global (opcional) */
+html.loading { cursor: progress; }
+html.loading body { pointer-events: none; }
+
+/* Botão com loading */
+button.is-loading { position: relative; pointer-events: none; opacity: .85; }
+button.is-loading .btn-text { visibility: hidden; } /* esconde o texto mas mantém largura */
+button .btn-spinner {
+  display: none;
+  width: 18px; height: 18px; border: 3px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%;
+  animation: btnspin .8s linear infinite;
+  position: absolute; top: 50%; left: 12px; transform: translateY(-50%);
+}
+button.is-loading .btn-spinner { display: inline-block; }
+@keyframes btnspin { to { transform: translateY(-50%) rotate(360deg); } }
+
+/* Evitar flicker: mostrar loader só se demorar um pouco */
+:root { --loader-min-delay: 150ms; --loader-min-show: 300ms; }

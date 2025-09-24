@@ -7,6 +7,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="loader.css">
+  <script src="js/loader.js" defer></script>
 
   <script>
         // Proteção: apenas usuários com perfil 'master' podem acessar
@@ -19,6 +21,12 @@
 </head>
 
 <body>
+    <!-- GLOBAL LOADER (coloque logo depois da tag <body>) -->
+    <div id="global-loader" aria-live="polite" aria-busy="true" hidden>
+    <div class="gl-backdrop"></div>
+    <div class="gl-spinner" role="status" aria-label="Carregando"></div>
+    </div>
+
     <div class="flex h-screen bg-gray-100">
         <!-- Sidebar -->
         <div id="sidebar" class="sidebar bg-gradient-to-b from-blue-900 to-blue-800 text-white py-4 flex flex-col">
