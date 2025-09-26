@@ -8,6 +8,9 @@ let indicadorSelecionado = null;
 let __setoresUsuarioIds = new Set();      // Number
 let __setoresUsuarioIdsStr = new Set();   // String (espelha os mesmos IDs)
 
+// 🔹 NOVO: conjunto de (indicador_mes_ano) que JÁ têm preenchimento ≠ '-'
+let __preenchidosQualquerUsuario = new Set();
+
 // =============================
 // 🔹 Helpers
 // =============================
@@ -26,6 +29,114 @@ function extrairSetorIdDoItem(item) {
     if (c !== undefined && c !== null && c !== "") return c;
   }
   return null;
+}
+
+// -------------------- NOVOS HELPERS (periodicidade) --------------------
+function normalizarPeriodicidade(raw) {
+  // aceita 1/2/3/6/12, "mensal", "bimestral", "trimestral", "semestral", "anual"
+  if (raw == null) return 1;
+  if (typeof raw === 'number') return Math.max(1, raw || 1);
+  const s = String(raw).trim().toLowerCase();
+  if (/^\d+$/.test(s)) return Math.max(1, parseInt(s, 10));
+  if (s.includes('bimes')) return 2;
+  if (s.includes('trimes')) return 3;
+  if (s.includes('semes')) return 6;
+  if (s.includes('anual')) return 12;
+  return 1; // padrão mensal
+}
+
+function extrairMesInicial(obj) {
+  // Aceita: Date, "YYYY-MM", "YYYY-MM-DD", número 1..12
+  const candidatos = [
+    obj?.mes_inicial, obj?.mes_inicio, obj?.mes_referencia,
+    obj?.mes_base, obj?.mes_inicial_referencia
+  ];
+  for (const c of candidatos) {
+    if (c == null) continue;
+
+    // número direto (1..12)
+    if (typeof c === 'number' && c >= 1 && c <= 12) return c;
+
+    const s = String(c).trim();
+    if (/^\d{4}-\d{2}(-\d{2})?$/.test(s)) {
+      // "YYYY-MM" ou "YYYY-MM-DD"
+      const parts = s.split('-');
+      return parseInt(parts[1], 10); // mês 1..12
+    }
+  }
+  return 1; // fallback: janeiro
+}
+
+// 🔹 NOVO: extrair janela completa (YYYY-MM) para usar como corte
+function extrairJanela(obj) {
+  // Retorna { inicioYM: "YYYY-MM" | null, fimYM: "YYYY-MM" | null }
+  const toYM = (val) => {
+    if (val == null) return null;
+    const s = String(val).trim();
+    if (/^\d{4}-\d{2}$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(0, 7); // YYYY-MM
+    return null;
+  };
+  return {
+    inicioYM: toYM(obj?.mes_inicial),
+    fimYM: toYM(obj?.mes_final)
+  };
+}
+
+function mesPertenceAoCalendario(mes, mesInicial, passoMeses) {
+  // Ex.: passo=2 e mesInicial=1 => meses válidos: 1,3,5,7,9,11
+  if (!Number.isFinite(mes) || !Number.isFinite(mesInicial) || !Number.isFinite(passoMeses)) return true;
+  const diff = ((mes - mesInicial) % passoMeses + passoMeses) % passoMeses;
+  return diff === 0;
+}
+
+// Helpers YM
+function toYMStr(ano, mes) { return `${String(ano).padStart(4,'0')}-${String(mes).padStart(2,'0')}`; }
+function ymToInt(ym) {               // "YYYY-MM" ->  YYYY*100 + MM
+  if (!ym) return null;
+  const [y, m] = ym.split('-').map(Number);
+  return y * 100 + m;
+}
+function inJanela(ano, mes, inicioYM, fimYM) {
+  const cur = ano * 100 + mes;
+  const i = ymToInt(inicioYM);
+  const f = ymToInt(fimYM);
+  if (i != null && cur < i) return false;
+  if (f != null && cur > f) return false;
+  return true;
+}
+
+// Mapa: id do indicador -> { passoMeses, mesInicial, inicioYM, fimYM }
+const __mapaConfigsIndicadores = new Map();
+
+async function montarMapaConfigIndicadores(pendentes) {
+  __mapaConfigsIndicadores.clear();
+  const ids = [...new Set(pendentes.map(p => p.id))];
+
+  const token = localStorage.getItem('access');
+  const res = await fetch(`${window.API_BASE_URL}/api/indicadores/`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!res.ok) {
+    console.warn('Falha ao buscar indicadores p/ periodicidade; assumindo mensal.');
+    ids.forEach(id => __mapaConfigsIndicadores.set(id, {
+      passoMeses: 1, mesInicial: 1, inicioYM: null, fimYM: null
+    }));
+    return;
+  }
+  const payload = await res.json();
+  const todos = asList(payload);
+  const porId = new Map(todos.map(x => [x.id, x]));
+
+  ids.forEach(id => {
+    const ind = porId.get(id) || {};
+    const passoMeses = normalizarPeriodicidade(
+      ind.periodicidade ?? ind.periodicidade_meses ?? ind.periodicidade_num
+    );
+    const mesInicial = extrairMesInicial(ind);
+    const { inicioYM, fimYM } = extrairJanela(ind);
+    __mapaConfigsIndicadores.set(id, { passoMeses, mesInicial, inicioYM, fimYM });
+  });
 }
 
 function normalizeDecimalString(s) {
@@ -126,6 +237,57 @@ async function resolverPreenchimentoId(indicadorId, mes, ano, origem = 'manual')
   return data?.id;
 }
 
+function valorFoiPreenchido(valor) {
+  if (valor === null || valor === undefined) return false;
+  const s = String(valor).trim();
+  if (s === '' || s === '-') return false;
+  return true; // 0, 0.0, '0' são válidos (≠ '-')
+}
+
+// Utilitário para lidar com respostas paginadas {results:[]}
+function asList(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.results)) return data.results;
+  return [];
+}
+
+async function carregarPreenchidosParaPendentes(pendentesDoMeuSetor) {
+  __preenchidosQualquerUsuario = new Set();
+
+  // Quais (ano,mes) existem nos pendentes?
+  const yms = new Set(
+    pendentesDoMeuSetor.map(p => `${p.ano}-${String(p.mes).padStart(2,'0')}`)
+  );
+
+  const token = localStorage.getItem('access');
+  const base = `${window.API_BASE_URL}/api/preenchimentos/`;
+
+  // Busca por cada (ano,mes) e popula o Set
+  const reqs = [...yms].map(async ym => {
+    const [ano, mesStr] = ym.split('-');
+    const mes = Number(mesStr);
+    const url = `${base}?ano=${ano}&mes=${mesStr}`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) {
+      console.warn('Falha ao buscar preenchimentos para', ym, res.status);
+      return;
+    }
+    const data = asList(await res.json());
+    data.forEach(pr => {
+      const indicadorId = typeof pr.indicador === 'object' ? pr.indicador.id : pr.indicador;
+      if (indicadorId == null) return;
+      if (valorFoiPreenchido(pr.valor_realizado)) {
+        const chave = `${indicadorId}_${mes}_${Number(ano)}`;
+        __preenchidosQualquerUsuario.add(chave);
+      }
+    });
+  });
+
+  await Promise.all(reqs);
+  console.debug('[preenchidos≠"-"]', __preenchidosQualquerUsuario);
+}
+
 // =============================
 // 🔹 Carregar setores do usuário (IDs)
 // =============================
@@ -138,6 +300,10 @@ async function carregarUsuarioSetores() {
     if (!res.ok) throw new Error("Erro ao buscar /api/meu-usuario/");
 
     const user = await res.json();
+
+    // 🔹 PERFIL do usuário (master/gestor/...)
+    window.__perfilUsuario = String(user?.perfil || '').toLowerCase();
+    window.__ehGestor = (window.__perfilUsuario === 'gestor');
 
     // Coleta IDs dos setores do usuário (inclui setor_principal como fallback)
     const idsDiretos = (Array.isArray(user?.setores) ? user.setores : [])
@@ -154,10 +320,13 @@ async function carregarUsuarioSetores() {
     __setoresUsuarioIds = new Set(ids.map(n => Number(n)));
     __setoresUsuarioIdsStr = new Set(ids.map(String));
 
+    console.debug("[meu-usuario] perfil:", window.__perfilUsuario);
     console.debug("[meu-usuario] setores IDs (Number):", Array.from(__setoresUsuarioIds));
     console.debug("[meu-usuario] setores IDs (String):", Array.from(__setoresUsuarioIdsStr));
   } catch (e) {
     console.error("Falha ao carregar setores do usuário:", e);
+    window.__perfilUsuario = undefined;
+    window.__ehGestor = false;
     __setoresUsuarioIds = new Set();
     __setoresUsuarioIdsStr = new Set();
   }
@@ -179,16 +348,26 @@ async function carregarPreenchimentos() {
     const data = await res.json();
     if (!Array.isArray(data)) throw new Error("Resposta inválida (esperado array)");
 
+    // 🔹 Limpa e repopula conforme a regra
+    preenchimentosRealizados = new Set();
+
+    // Apenas quando o usuário logado for GESTOR é que removemos meses da tela
+    if (!window.__ehGestor) {
+      console.debug("Usuário não é gestor — não filtra por preenchimentos próprios.");
+      return;
+    }
+
     data.forEach(item => {
       const indicadorId = typeof item.indicador === 'object' ? item.indicador.id : item.indicador;
       const chave = `${indicadorId}_${item.mes}_${item.ano}`;
       preenchimentosRealizados.add(chave);
     });
 
-    console.log("✔️ Preenchimentos carregados:", preenchimentosRealizados);
+    console.log("✔️ Preenchimentos (do gestor) carregados:", preenchimentosRealizados);
 
   } catch (err) {
     console.error("Erro ao carregar preenchimentos:", err);
+    preenchimentosRealizados = new Set();
   }
 }
 
@@ -239,9 +418,36 @@ async function carregarIndicadores() {
       });
     }
 
-    // 🔹 Agrupar por indicador
+    // 🔹 Monta mapa de periodicidade (passoMeses/mesInicial) por indicador
+    await montarMapaConfigIndicadores(pendentesDoMeuSetor);
+
+    // 🔹 Carrega meses já preenchidos (valor ≠ '-') p/ os (ano,mes) presentes
+    await carregarPreenchidosParaPendentes(pendentesDoMeuSetor);
+
+   // 🔹 Agrupar por indicador, pulando:
+    //    (a) meses fora da JANELA [mes_inicial..mes_final] (se definidos)
+    //    (b) meses fora do PASSO (1,2,3,6,12) ancorado no mês do mes_inicial
+    //    (c) meses já preenchidos com valor ≠ '-'
     const agrupados = {};
     pendentesDoMeuSetor.forEach(item => {
+      const cfg = __mapaConfigsIndicadores.get(item.id) || {
+        passoMeses: 1, mesInicial: 1, inicioYM: null, fimYM: null
+      };
+
+      // (a) janela
+      if (!inJanela(Number(item.ano), Number(item.mes), cfg.inicioYM, cfg.fimYM)) return;
+
+      // (b) passo
+      const dentroCalendario = mesPertenceAoCalendario(
+        Number(item.mes), cfg.mesInicial, cfg.passoMeses
+      );
+      if (!dentroCalendario) return;
+
+      // (c) já preenchidos
+      const jaTemQualquerPreench =
+        __preenchidosQualquerUsuario.has(`${item.id}_${item.mes}_${item.ano}`);
+      if (jaTemQualquerPreench) return;
+
       const chave = `${item.id}`;
       if (!agrupados[chave]) {
         agrupados[chave] = {
@@ -251,13 +457,12 @@ async function carregarIndicadores() {
           pendencias: []
         };
       }
-      agrupados[chave].pendencias.push({
-        mes: item.mes,
-        ano: item.ano
-      });
+      agrupados[chave].pendencias.push({ mes: item.mes, ano: item.ano });
     });
 
-    renderizarIndicadores(Object.values(agrupados));
+    // 🔹 Remove cartões que ficaram sem pendências
+    const listaFiltrada = Object.values(agrupados).filter(x => x.pendencias.length > 0);
+    renderizarIndicadores(listaFiltrada);
 
   } catch (err) {
     console.error("Erro ao carregar indicadores:", err);

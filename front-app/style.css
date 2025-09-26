@@ -98,3 +98,16 @@
         .card-expanding {
             animation: expandCard 0.3s ease forwards;
         }
+
+/* === Botões: estado de carregamento === */
+button.is-loading { position: relative; pointer-events: none; opacity: .85; }
+button.is-loading::after {
+  content: "";
+  width: 18px; height: 18px;
+  border: 3px solid rgba(255,255,255,.35);
+  border-top-color: #fff; /* usa cor do texto para contraste em botões escuros */
+  border-radius: 50%;
+  animation: btnspin .8s linear infinite;
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+}
+@keyframes btnspin { to { transform: translateY(-50%) rotate(360deg); } }

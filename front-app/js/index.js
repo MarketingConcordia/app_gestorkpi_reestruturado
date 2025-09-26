@@ -25,6 +25,66 @@ function asList(data) {
   return [];
 }
 
+/* ==== 🔸 Helpers de periodicidade ==== */
+
+// 1) normaliza periodicidade (1/2/3/6/12, ou strings tipo "bimestral" etc.)
+function normalizarPeriodicidade(raw) {
+  if (raw == null) return 1;
+  if (typeof raw === 'number') return Math.max(1, parseInt(raw, 10) || 1);
+  const s = String(raw).trim().toLowerCase();
+  if (/^\d+$/.test(s)) return Math.max(1, parseInt(s, 10));
+  if (s.includes('bimes')) return 2;
+  if (s.includes('trimes')) return 3;
+  if (s.includes('semes')) return 6;
+  if (s.includes('anual')) return 12;
+  return 1;
+}
+
+// 2) extrai mês-âncora (1..12) a partir de "YYYY-MM" | "YYYY-MM-DD" | número
+function extrairMesInicial(ind) {
+  const cands = [
+    ind?.mes_inicial, ind?.mes_inicio, ind?.mes_referencia,
+    ind?.mes_base, ind?.mes_inicial_referencia
+  ];
+  for (const c of cands) {
+    if (c == null) continue;
+    if (typeof c === 'number' && c >= 1 && c <= 12) return c;
+    const s = String(c).trim();
+    if (/^\d{4}-\d{2}$/.test(s))   return parseInt(s.split('-')[1], 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return parseInt(s.split('-')[1], 10);
+  }
+  return 1; // fallback: janeiro
+}
+
+// 3) extrai janela [mes_inicial..mes_final] como "YYYY-MM"
+function extrairJanela(ind) {
+  const toYM = (val) => {
+    if (val == null) return null;
+    const s = String(val).trim();
+    if (/^\d{4}-\d{2}$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(0, 7);
+    return null;
+  };
+  return {
+    inicioYM: toYM(ind?.mes_inicial),
+    fimYM: toYM(ind?.mes_final)
+  };
+}
+
+// 4) checagens de janela/passo
+function ymToInt(ym) { if (!ym) return null; const [y, m] = ym.split('-').map(Number); return y*100 + m; }
+function inJanela(ano, mes, inicioYM, fimYM) {
+  const cur = ano*100 + mes, i = ymToInt(inicioYM), f = ymToInt(fimYM);
+  if (i != null && cur < i) return false;
+  if (f != null && cur > f) return false;
+  return true;
+}
+function mesPertenceAoCalendario(mes, mesInicial, passoMeses) {
+  if (!Number.isFinite(mes) || !Number.isFinite(mesInicial) || !Number.isFinite(passoMeses)) return true;
+  const diff = ((mes - mesInicial) % passoMeses + passoMeses) % passoMeses;
+  return diff === 0;
+}
+
 // Atingimento
 function verificarAtingimento(tipo, valor, meta) {
   if (!tipo || valor == null || meta == null) return false;
@@ -97,34 +157,45 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 4) Calcula os indicadores com histórico/último valor/meta mensal
     const indicadoresCalculados = indicadoresBase.map(indicador => {
-      const preenchimentosDoIndicador = preenchimentos
-        .filter(p => p.indicador === indicador.id)
-        .sort((a, b) => {
-          if (a.ano !== b.ano) return a.ano - b.ano;
-          return a.mes - b.mes;
-        });
+    // 🔸 configurações de periodicidade
+    const passo   = normalizarPeriodicidade(indicador.periodicidade);
+    const mesAnc  = extrairMesInicial(indicador);   // 1..12
+    const { inicioYM, fimYM } = extrairJanela(indicador);
 
-      const metasDoIndicador = metasMensais.filter(m => m.indicador === indicador.id);
-
-      const porMes = new Map();
-      preenchimentosDoIndicador.forEach(p => {
-        const mesStr = `${p.ano}-${String(p.mes).padStart(2,'0')}`;
-        const metaDoMes = metasDoIndicador.find(m => (m.mes || '').startsWith(mesStr));
-        const metaValor = metaDoMes ? parseFloat(metaDoMes.valor_meta) : parseFloat(indicador.valor_meta);
-
-        porMes.set(mesStr, {
-          id: p.id,
-          data: `${mesStr}-01`,
-          valor: p.valor_realizado,
-          meta: metaValor,
-          comentario: p.comentario,
-          provas: p.arquivo ? [p.arquivo] : []
-        });
+    // 🔸 filtra por janela e passo
+    const preenchimentosDoIndicador = preenchimentos
+      .filter(p => p.indicador === indicador.id)
+      .filter(p => inJanela(Number(p.ano), Number(p.mes), inicioYM, fimYM))
+      .filter(p => mesPertenceAoCalendario(Number(p.mes), mesAnc, passo))
+      .sort((a, b) => {
+        if (a.ano !== b.ano) return a.ano - b.ano;
+        return a.mes - b.mes;
       });
-      const historico = Array.from(porMes.values())
-        .sort((a, b) => String(a.data).localeCompare(String(b.data)));
 
-      const ultimoPreenchimento = preenchimentosDoIndicador.at(-1);
+    const metasDoIndicador = metasMensais
+      .filter(m => m.indicador === indicador.id);
+
+    // 🔸 compõe histórico (um registro por mês)
+    const porMes = new Map();
+    preenchimentosDoIndicador.forEach(p => {
+      const mesStr = `${p.ano}-${String(p.mes).padStart(2,'0')}`;
+      const metaDoMes = metasDoIndicador.find(m => (m.mes || '').startsWith(mesStr));
+      const metaValor = metaDoMes ? parseFloat(metaDoMes.valor_meta) : parseFloat(indicador.valor_meta);
+
+      porMes.set(mesStr, {
+        id: p.id,
+        data: `${mesStr}-01`,
+        valor: p.valor_realizado,
+        meta: metaValor,
+        comentario: p.comentario,
+        provas: p.arquivo ? [p.arquivo] : []
+      });
+    });
+    const historico = Array.from(porMes.values())
+      .sort((a, b) => String(a.data).localeCompare(String(b.data)));
+
+    // 🔸 o “último” também respeita periodicidade
+    const ultimoPreenchimento = preenchimentosDoIndicador.at(-1);
 
       let valorAtual = null;
       let valorMeta = parseFloat(indicador.valor_meta);
@@ -765,12 +836,26 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
   const iniYM = dataInicio ? toYM(dataInicio) : null;
   const fimYM = dataFim ? toYM(dataFim) : null;
 
-  // 1) filtra por período
+  // 🔸 configurações de periodicidade do indicador
+  const passo   = normalizarPeriodicidade(indicador.periodicidade);
+  const mesAnc  = extrairMesInicial(indicador);
+  const { inicioYM: indIniYM, fimYM: indFimYM } = extrairJanela(indicador);
+
+  // 1) filtra por período + periodicidade
   const historicoFiltrado = (indicador.historico || []).filter(item => {
     const [y, m] = String(item.data).slice(0,7).split('-').map(Number);
     const curr = y * 100 + m;
+
+    // filtro de período do usuário
     if (iniYM && curr < iniYM) return false;
     if (fimYM && curr > fimYM) return false;
+
+    // janela do indicador
+    if (!inJanela(y, m, indIniYM, indFimYM)) return false;
+
+    // passo (1,2,3,6,12) ancorado no mês de mes_inicial
+    if (!mesPertenceAoCalendario(m, mesAnc, passo)) return false;
+
     return true;
   });
 

@@ -1,10 +1,9 @@
 from datetime import date
-from decimal import Decimal
 from rest_framework import serializers
 
 from api.models import Preenchimento, MetaMensal, Indicador
 from api.utils import normalize_number
-
+from api.utils.periodicidade import mes_alinhado
 
 # =============================
 # 🔹 PREENCHIMENTOS
@@ -75,6 +74,28 @@ class PreenchimentoSerializer(serializers.ModelSerializer):
         except AttributeError:
             pass
         return value
+
+    # ✅ NOVO: valida combinação indicador/ano/mês contra a periodicidade
+    def validate(self, attrs):
+        indicador = attrs.get("indicador") or getattr(self.instance, "indicador", None)
+        ano = attrs.get("ano") or getattr(self.instance, "ano", None)
+        mes = attrs.get("mes") or getattr(self.instance, "mes", None)
+
+        # Se já temos os 3 valores, checamos alinhamento
+        if indicador is not None and ano is not None and mes is not None:
+            try:
+                ano_i = int(ano)
+                mes_i = int(mes)
+            except Exception:
+                # As validações específicas de ano/mes já tratam tipos/intervalo
+                return attrs
+
+            if not mes_alinhado(indicador, ano_i, mes_i):
+                raise serializers.ValidationError({
+                    "mes": "Mês/ano fora da periodicidade do indicador."
+                })
+
+        return attrs
 
     def get_meta(self, obj):
         try:

@@ -1,11 +1,11 @@
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from django.utils.timezone import make_aware              # 👈 ADD
+from django.utils.timezone import make_aware
 from django.conf import settings
 from typing import Optional
-from datetime import date, datetime                       # 👈 ADD
-from dateutil.relativedelta import relativedelta          # 👈 ADD
+from datetime import date, datetime
+from dateutil.relativedelta import relativedelta
 import logging, traceback
 
 from rest_framework import viewsets, generics, serializers, status
@@ -24,6 +24,7 @@ from api.serializers import (
 )
 from api.utils import registrar_log
 from api.permissions import IsMasterUser, HasIndicadorPermission
+from api.utils.periodicidade import mes_alinhado, meses_permitidos
 
 logger = logging.getLogger(__name__)
 
@@ -116,15 +117,14 @@ def _last_month_first_day(today: Optional[date] = None) -> date:
 
 def _backfill_preenchimentos_zero(indicador, autor):
     """
-    Cria Preenchimento(valor_realizado=0) para cada (ano, mes) sem registro,
-    do indicador.mes_inicial até (mês atual - 1). Idempotente.
+    Cria Preenchimento(valor_realizado=0) apenas nos meses alinhados
+    à periodicidade/âncora, do mes_inicial até (mês atual - 1). Idempotente.
     """
     if not getattr(indicador, "mes_inicial", None):
         return 0
 
-    inicio = _first_of_month(indicador.mes_inicial)
     limite = _last_month_first_day()
-    if limite < inicio:
+    if limite < _first_of_month(indicador.mes_inicial):
         return 0
 
     # (ano, mes) já existentes para este indicador (independente do usuário)
@@ -133,21 +133,22 @@ def _backfill_preenchimentos_zero(indicador, autor):
         .values_list("ano", "mes")
     )
 
-    atual = inicio
+    # 👇 meses alinhados (YYYY-MM-01) até o limite
+    permitidos = meses_permitidos(indicador, ate=limite)
+
     to_create = []
-    while atual <= limite:
-        chave = (atual.year, atual.month)
+    for d in sorted(permitidos):
+        chave = (d.year, d.month)
         if chave not in existentes:
             to_create.append(Preenchimento(
                 indicador=indicador,
-                ano=atual.year,
-                mes=atual.month,
+                ano=d.year,
+                mes=d.month,
                 valor_realizado=0,
                 preenchido_por=autor,
-                data_preenchimento=make_aware(datetime(atual.year, atual.month, 1, 0, 0, 0)),
+                data_preenchimento=make_aware(datetime(d.year, d.month, 1, 0, 0, 0)),
                 origem="backfill-auto",
             ))
-        atual = atual + relativedelta(months=+1)
 
     if to_create:
         Preenchimento.objects.bulk_create(to_create, ignore_conflicts=True)
@@ -307,16 +308,26 @@ class IndicadoresConsolidadosView(APIView):
             for indicador in qs_ind:
                 try:
                     # Ordenação segura
-                    preenchimentos = sorted(
-                        indicador.preenchimentos.all(),  # 👈 related_name correto
-                        key=lambda p: _ts_or_0(p.data_preenchimento)
-                    )
+                    preenchimentos = [
+                        p for p in indicador.preenchimentos.all()
+                        if mes_alinhado(indicador, p.ano, p.mes)
+                    ]
+                    # ordena por data de preenchimento (fallback para 0)
+                    preenchimentos = sorted(preenchimentos, key=lambda p: _ts_or_0(p.data_preenchimento))
                     ultimo = preenchimentos[-1] if preenchimentos else None
 
                     # metas_dict (ignora None)
                     metas_dict = {}
+                    # 👇 calcule meses alinhados até HOJE (ou use um "horizonte" se preferir)
+                    permitidos = meses_permitidos(indicador, ate=date.today())
+
                     for m in indicador.metas_mensais.all():
-                        k = _ym_key(getattr(m, "mes", None))
+                        mes_m = getattr(m, "mes", None)
+                        if not mes_m:
+                            continue
+                        if _first_of_month(mes_m) not in permitidos:
+                            continue  # ignora metas desalinhadas
+                        k = _ym_key(mes_m)
                         if k:
                             metas_dict[k] = _to_float(m.valor_meta)
 
@@ -415,7 +426,7 @@ class IndicadoresConsolidadosView(APIView):
                         "metas_mensais": [
                             {"mes": _ymd(getattr(m, "mes", None)), "valor_meta": _to_float(m.valor_meta)}
                             for m in indicador.metas_mensais.all().order_by("mes")
-                            if _ymd(getattr(m, "mes", None))
+                            if _ymd(getattr(m, "mes", None)) and _first_of_month(m.mes) in permitidos  # 👈 apenas alinhadas
                         ],
                     })
 

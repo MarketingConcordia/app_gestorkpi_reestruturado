@@ -8,6 +8,7 @@ from rest_framework import serializers
 
 from api.models import Indicador, Meta, MetaMensal, Preenchimento
 from api.utils import parse_mes_inicial, normalize_number
+from api.utils.periodicidade import meses_permitidos
 
 def _first_of_month(d: date) -> date:
     return date(d.year, d.month, 1)
@@ -17,6 +18,7 @@ def _last_month_first_day(today: Optional[date] = None) -> date:
     # início do mês passado
     return _first_of_month(t) - relativedelta(months=1)
 
+# ========= NOVOS HELPERS =========
 # =============================
 # 🔧 Base com full_clean
 # =============================
@@ -110,12 +112,14 @@ class IndicadorSerializer(CleanModelSerializer):
 
     # ---------- Computed fields ----------
     def get_status(self, obj):
-        hoje = date.today()
-        # ⚠️ usar o related_name correto: 'preenchimentos'
+        hoje = _first_of_month(date.today())
+        # se o mês corrente não pertence ao calendário do indicador, não cobre status
+        if hoje not in meses_permitidos(obj, ate=hoje):
+            return "Fora do período"
+
         preenchido = obj.preenchimentos.filter(
             mes=hoje.month, ano=hoje.year, valor_realizado__isnull=False
         ).exists()
-        # Mantém a apresentação como no front (capitalizado)
         return "Concluído" if preenchido else "Pendente"
 
     def get_metas_mensais(self, obj):
@@ -129,39 +133,37 @@ class IndicadorSerializer(CleanModelSerializer):
     # ---------- Helpers internos ----------
     def _ensure_metas_ate(self, indicador: Indicador, target_end: date, hard_cap: bool):
         """
-        Garante que existam MetaMensal do indicador desde mes_inicial até target_end,
-        respeitando periodicidade. Se hard_cap=True, remove metas além de target_end.
+        Reconciliador:
+        1) Calcula meses PERMITIDOS pela periodicidade/âncora até target_end (respeita mes_final).
+        2) Cria metas FALTANTES para esses meses.
+        3) Remove metas DESALINHADAS dentro do range.
+        4) Se hard_cap=True, remove metas > target_end.
         """
-        if not indicador.mes_inicial:
-            base = _first_of_month(date.today())
-        else:
-            base = _first_of_month(indicador.mes_inicial)
-
-        step = indicador.periodicidade or 1
         target_end = _first_of_month(target_end)
 
-        # Meses já existentes
-        existentes = set(
-            MetaMensal.objects.filter(indicador=indicador)
-            .values_list('mes', flat=True)
-        )
+        # 1) meses permitidos pela regra centralizada
+        permitidos = meses_permitidos(indicador, ate=target_end)
 
-        # Cria do início até o alvo (inclusive), sem duplicar
-        atual = base
-        to_create = []
-        while atual <= target_end:
-            if atual not in existentes:
-                to_create.append(MetaMensal(
-                    indicador=indicador,
-                    mes=atual,
-                    valor_meta=indicador.valor_meta
-                ))
-            atual = atual + relativedelta(months=+step)
+        existentes_qs = MetaMensal.objects.filter(indicador=indicador)
+        existentes = set(existentes_qs.values_list('mes', flat=True))
 
+        # 2) criar faltantes alinhadas
+        to_create = [
+            MetaMensal(indicador=indicador, mes=m, valor_meta=indicador.valor_meta)
+            for m in permitidos if m not in existentes
+        ]
         if to_create:
             MetaMensal.objects.bulk_create(to_create, ignore_conflicts=True)
 
-        # Se fechado (hard_cap), remove metas além do alvo
+        # 3) remover desalinhadas dentro do range
+        if permitidos:
+            base_range = min(permitidos)
+            (existentes_qs
+            .filter(mes__gte=base_range, mes__lte=target_end)
+            .exclude(mes__in=permitidos)
+            .delete())
+
+        # 4) hard cap: corta qualquer coisa após target_end
         if hard_cap:
             MetaMensal.objects.filter(indicador=indicador, mes__gt=target_end).delete()
 
