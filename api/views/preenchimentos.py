@@ -267,6 +267,13 @@ class PreenchimentoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='pendentes')
     def pendentes_action(self, request):
+        # 🔹 Gera automaticamente placeholders até o mês passado (se faltar)
+        try:
+            self._autofill_zeros_until_last_month(request.user)
+        except Exception:
+            # falhas no autofill não devem impedir a listagem
+            pass
+
         hoje = now().date()
         qs = self.get_queryset().filter(
             confirmado=False,

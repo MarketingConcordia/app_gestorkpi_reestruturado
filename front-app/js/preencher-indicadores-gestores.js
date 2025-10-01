@@ -378,7 +378,8 @@ async function carregarIndicadores() {
   const token = localStorage.getItem('access');
 
   try {
-    const res = await fetch(`${window.API_BASE_URL}/api/indicadores/pendentes/`, {
+    // 🔄 Fonte certa: pendentes de PREENCHIMENTO (gera “-” na virada do mês)
+    const res = await fetch(`${window.API_BASE_URL}/api/preenchimentos/pendentes/`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
 
@@ -386,8 +387,21 @@ async function carregarIndicadores() {
     const data = await res.json();
     if (!Array.isArray(data)) throw new Error("Resposta inválida (esperado array)");
 
+    // Payload vem como Preenchimento; normaliza p/ {id,nome,descricao,setor,ano,mes}
+    const normalizados = data.map(pr => {
+      const ind = typeof pr.indicador === 'object' ? pr.indicador : { id: pr.indicador };
+      return {
+        id: ind.id,
+        nome: ind.nome || pr.indicador_nome || 'Indicador',
+        descricao: ind.extracao_indicador || ind.descricao || '',
+        setor: ind.setor?.id ?? ind.setor ?? pr.setor_id ?? null,
+        ano: pr.ano,
+        mes: pr.mes,
+      };
+    });
+
     // Amostra de payload para debug
-    console.debug("[pendentes] amostra bruta:", data.slice(0, 3));
+    console.debug("[pendentes(preenchimentos)] amostra normalizada:", normalizados.slice(0, 3));
 
     if (__setoresUsuarioIds.size === 0 && __setoresUsuarioIdsStr.size === 0) {
       console.warn("Usuário sem IDs de setor associados. Nada será exibido.");
@@ -395,55 +409,25 @@ async function carregarIndicadores() {
       return;
     }
 
-    // 🔒 Mantém somente itens cujo setor_id pertence aos setores do usuário (comparando número OU string)
-    const pendentesDoMeuSetor = data.filter(item => {
-      const sid = extrairSetorIdDoItem(item);
+    // 🔒 Mantém somente itens cujo setor_id pertence aos setores do usuário
+    const pendentesDoMeuSetor = normalizados.filter(item => {
+      const sid = item.setor;
       return (
         sid != null &&
         ( __setoresUsuarioIds.has(Number(sid)) || __setoresUsuarioIdsStr.has(String(sid)) )
       );
     });
 
-    // Se vier vazio, loga um diagnóstico
     if (pendentesDoMeuSetor.length === 0) {
-      console.warn("[pendentes] vazio após filtro. Mapeando setor_id detectado nos primeiros itens:");
-      data.slice(0, 10).forEach((it, idx) => {
-        const sid = extrairSetorIdDoItem(it);
-        console.warn(`  #${idx}`, {
-          setor_detectado: sid,
-          pertenceAoUsuario:
-            sid != null &&
-            ( __setoresUsuarioIds.has(Number(sid)) || __setoresUsuarioIdsStr.has(String(sid)) )
-        });
-      });
+      console.warn("[pendentes] vazio após filtro. Exemplo do set:", normalizados.slice(0, 5));
     }
 
-    // 🔹 Monta mapa de periodicidade (passoMeses/mesInicial) por indicador
-    await montarMapaConfigIndicadores(pendentesDoMeuSetor);
-
-    // 🔹 Carrega meses já preenchidos (valor ≠ '-') p/ os (ano,mes) presentes
+    // ✅ Se você quer APENAS esconder o que JÁ tem valor (qualquer usuário), mantenha:
     await carregarPreenchidosParaPendentes(pendentesDoMeuSetor);
 
-   // 🔹 Agrupar por indicador, pulando:
-    //    (a) meses fora da JANELA [mes_inicial..mes_final] (se definidos)
-    //    (b) meses fora do PASSO (1,2,3,6,12) ancorado no mês do mes_inicial
-    //    (c) meses já preenchidos com valor ≠ '-'
+    // 🔹 Agrupar por indicador (sem bloquear por janela/passo — o backend já gera só meses válidos)
     const agrupados = {};
     pendentesDoMeuSetor.forEach(item => {
-      const cfg = __mapaConfigsIndicadores.get(item.id) || {
-        passoMeses: 1, mesInicial: 1, inicioYM: null, fimYM: null
-      };
-
-      // (a) janela
-      if (!inJanela(Number(item.ano), Number(item.mes), cfg.inicioYM, cfg.fimYM)) return;
-
-      // (b) passo
-      const dentroCalendario = mesPertenceAoCalendario(
-        Number(item.mes), cfg.mesInicial, cfg.passoMeses
-      );
-      if (!dentroCalendario) return;
-
-      // (c) já preenchidos
       const jaTemQualquerPreench =
         __preenchidosQualquerUsuario.has(`${item.id}_${item.mes}_${item.ano}`);
       if (jaTemQualquerPreench) return;
@@ -460,7 +444,11 @@ async function carregarIndicadores() {
       agrupados[chave].pendencias.push({ mes: item.mes, ano: item.ano });
     });
 
-    // 🔹 Remove cartões que ficaram sem pendências
+    // 🔹 NOVO: ordenar pendências por ano asc, depois mês asc
+    Object.values(agrupados).forEach(gr => {
+      gr.pendencias.sort((a, b) => (a.ano - b.ano) || (a.mes - b.mes));
+    });
+
     const listaFiltrada = Object.values(agrupados).filter(x => x.pendencias.length > 0);
     renderizarIndicadores(listaFiltrada);
 

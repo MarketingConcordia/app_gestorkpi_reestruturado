@@ -87,6 +87,29 @@ function asList(data) {
   return [];
 }
 
+// 🔄 Busca TODAS as páginas do DRF (results/next)
+async function fetchAll(urlBase) {
+  const out = [];
+  let url = urlBase;
+  while (url) {
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Falha ao carregar: ${url}`);
+    const json = await res.json();
+
+    if (Array.isArray(json?.results)) {
+      out.push(...json.results);
+      url = json.next || null;
+    } else if (Array.isArray(json)) {
+      out.push(...json);
+      url = null;
+    } else {
+      out.push(json);
+      url = null;
+    }
+  }
+  return out;
+}
+
 /* ==== 🔸 Helpers de periodicidade ==== */
 
 // 1) normaliza periodicidade (1/2/3/6/12, ou strings tipo "bimestral" etc.)
@@ -176,6 +199,79 @@ if (!token) {
   window.location.href = 'login.html';
 }
 
+// === Persistência de estado do modal entre reloads ===
+function __rememberReturnModal(state) {
+  try { sessionStorage.setItem('kpiReturnModal', JSON.stringify({ ...state, t: Date.now() })); } catch (e) {}
+}
+function __peekReturnModal() {
+  try {
+    const raw = sessionStorage.getItem('kpiReturnModal');
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(e) { return null; }
+}
+function __clearReturnModal() {
+  try { sessionStorage.removeItem('kpiReturnModal'); } catch(e) {}
+}
+
+// Tenta reabrir o modal depois do render dos cards
+let __reopenedOnce = false;
+function __tryReopenFromMemory(sourceList) {
+  if (__reopenedOnce) return;
+  const st = __peekReturnModal && __peekReturnModal();
+  if (!st || !st.indicadorId) return;
+
+  const src = Array.isArray(sourceList) ? sourceList
+    : (Array.isArray(window.__LAST_RENDER_DATA) && window.__LAST_RENDER_DATA.length ? window.__LAST_RENDER_DATA
+    : (Array.isArray(window.indicadoresCalculados) ? window.indicadoresCalculados : []));
+
+  const ind = (Array.isArray(src) ? src : []).find(i => Number(i.id) === Number(st.indicadorId));
+  if (ind && typeof mostrarDetalhes === 'function') {
+    __reopenedOnce = true;
+    __clearReturnModal && __clearReturnModal();
+    mostrarDetalhes(ind);
+    return;
+  }
+
+  // fallback: aguarda ciclo(s) de render
+  let tries = 0;
+  const iv = setInterval(() => {
+    tries++;
+    const src2 = (Array.isArray(window.__LAST_RENDER_DATA) && window.__LAST_RENDER_DATA.length) ? window.__LAST_RENDER_DATA
+      : (Array.isArray(window.indicadoresCalculados) ? window.indicadoresCalculados : []);
+    const ind2 = (Array.isArray(src2) ? src2 : []).find(i => Number(i.id) === Number(st.indicadorId));
+    if (ind2 && typeof mostrarDetalhes === 'function') {
+      clearInterval(iv);
+      __reopenedOnce = true;
+      __clearReturnModal && __clearReturnModal();
+      mostrarDetalhes(ind2);
+    }
+    if (tries > 30) clearInterval(iv);
+  }, 150);
+}
+
+// Reabrir modal após reload (hook tardio)
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const st = __peekReturnModal && __peekReturnModal();
+    if (!st || !st.indicadorId) return;
+
+    let tries = 0;
+    const iv = setInterval(() => {
+      tries++;
+      const data = (typeof __LAST_RENDER_DATA !== 'undefined') ? __LAST_RENDER_DATA : null;
+      const src = Array.isArray(data) && data.length ? data : (Array.isArray(window.indicadoresCalculados) ? window.indicadoresCalculados : []);
+      const ind = (Array.isArray(src) ? src : []).find(i => Number(i.id) === Number(st.indicadorId));
+      if (ind && typeof mostrarDetalhes === 'function') {
+        clearInterval(iv);
+        __clearReturnModal && __clearReturnModal();
+        mostrarDetalhes(ind);
+      }
+      if (tries > 20) clearInterval(iv);
+    }, 150);
+  } catch(e) {}
+});
+
 // --------- Boot ---------
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -206,24 +302,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2) Preenche o select de setores (da API)
     preencherSelectSetores();
 
-    // 3) Carrega dados necessários em paralelo
-    const [indicadoresRes, preenchimentosRes, metasRes] = await Promise.all([
-      fetch(`${apiBase}/indicadores/`, { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch(`${apiBase}/preenchimentos/`, { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch(`${apiBase}/metas-mensais/`, { headers: { 'Authorization': `Bearer ${token}` } }),
+    // 3) Carrega dados necessários em paralelo (varrendo TODAS as páginas)
+    const [indicadoresBase, preenchimentos, metasMensais] = await Promise.all([
+      // se quiser, ajuste o page_size pra reduzir idas/voltas
+      fetchAll(`${apiBase}/indicadores/?page_size=100`),
+      // já pedimos ordenado pra simplificar “último preenchimento”
+      fetchAll(`${apiBase}/preenchimentos/?ordering=ano,mes,id`),
+      fetchAll(`${apiBase}/metas-mensais/?ordering=mes,id`),
     ]);
-
-    if (!indicadoresRes.ok || !preenchimentosRes.ok || !metasRes.ok) {
-      throw new Error('Falha ao carregar dados');
-    }
-
-    const indicadoresData = await indicadoresRes.json();
-    const preenchimentosData = await preenchimentosRes.json();
-    const metasMensaisData = await metasRes.json();
-
-    const indicadoresBase = asList(indicadoresData);
-    const preenchimentos = asList(preenchimentosData);
-    const metasMensais = asList(metasMensaisData);
 
     // 4) Calcula os indicadores com histórico/último valor/meta mensal
     const indicadoresCalculados = indicadoresBase
@@ -329,26 +415,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         return temAtual || temHistorico;
       });
 
-      // (opcional) logs de diagnóstico
-      console.debug('[gestores] ativos:', soAtivos.length);
-      console.debug('[gestores] visíveis (meus setores OU todos):', comVis.length);
-      console.debug('[gestores] com algum preenchimento:', comPreench.length);
-      console.debug('[gestores] exemplos (para todos):',
-        comVis.filter(x => isVisivelParaTodos(getIndicVisFlag(x))).slice(0,5).map(x => ({
-          id: x.id, nome: x.nome, vis: getIndicVisFlag(x), setor: x.setor_nome
-        }))
-      );
+      // // (opcional) logs de diagnóstico
+      // console.debug('[gestores] ativos:', soAtivos.length);
+      // console.debug('[gestores] visíveis (meus setores OU todos):', comVis.length);
+      // console.debug('[gestores] com algum preenchimento:', comPreench.length);
+      // console.debug('[gestores] exemplos (para todos):',
+      //   comVis.filter(x => isVisivelParaTodos(getIndicVisFlag(x))).slice(0,5).map(x => ({
+      //     id: x.id, nome: x.nome, vis: getIndicVisFlag(x), setor: x.setor_nome
+      //   }))
+      // );
 
+      window.indicadoresCalculados = comPreench;
       indicadoresComValoresGlobais = comPreench;
 
-      console.table(comVis.slice(0, 15).map(i => ({
-        id: i.id,
-        nome: i.nome,
-        setor: i.setor_nome,
-        visRaw: getIndicVisFlag(i),
-        ehParaTodos: isVisivelParaTodos(getIndicVisFlag(i)),
-        temValor: Array.isArray(i.historico) && i.historico.some(h => h?.valor != null && !Number.isNaN(Number(h.valor))),
-      })));
+      // console.table(comVis.slice(0, 15).map(i => ({
+      //   id: i.id,
+      //   nome: i.nome,
+      //   setor: i.setor_nome,
+      //   visRaw: getIndicVisFlag(i),
+      //   ehParaTodos: isVisivelParaTodos(getIndicVisFlag(i)),
+      //   temValor: Array.isArray(i.historico) && i.historico.some(h => h?.valor != null && !Number.isNaN(Number(h.valor))),
+      // })));
 
     // 5) Popula filtros e renderiza
     atualizarSelectSetoresComPreenchimento();
@@ -471,6 +558,9 @@ function renderComPaginacao(dadosFiltrados) {
 
   // usa a função já existente que monta os cards
   renderizarIndicadores(pageSlice);
+
+  // tenta reabrir o modal para o indicador salvo
+  __tryReopenFromMemory(pageSlice);
 
   // desenha os botões da paginação
   renderPaginacao(total, totalPages);
@@ -648,9 +738,9 @@ function mostrarDetalhes(indicador) {
       </td>
       ${podeEditar ? `
         <td class="px-4 py-2 border text-center">
-          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})">Editar Valor</button>
-          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoComentario(${item.id}, '${item.comentario?.replace(/'/g, "\\'") || ''}')">Editar Comentário</button>
-          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}')">Editar Prova</button>
+          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor}, ${indicador.id})">Editar Valor</button>
+          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoComentario(${item.id}, '${item.comentario?.replace(/'/g, "\\'") || ''}', ${indicador.id})">Editar Comentário</button>
+          <button class="text-blue-600 underline text-sm hover:text-blue-800" onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}', ${indicador.id})">Editar Prova</button>
         </td>
       ` : '' }
     `;
@@ -668,26 +758,22 @@ function mostrarDetalhes(indicador) {
   // Filtro histórico
   aplicarFiltroHistorico(indicador, "", "");
 
-  // Último preenchimento (compatível com paginação)
-  fetch(`${apiBase}/preenchimentos/?indicador=${indicador.id}`, {
-    headers: { 'Authorization': `Bearer ${token}` }
+  // Último preenchimento (paginação + ordenação garantida)
+fetchAll(`${apiBase}/preenchimentos/?indicador=${indicador.id}&ordering=ano,mes,id`)
+  .then(lista => {
+    if (!lista.length) return;
+    const ultimo = lista[lista.length - 1];
+    const responsavel =
+      ultimo?.preenchido_por?.first_name ||
+      ultimo?.preenchido_por?.username || "—";
+    const data =
+      ultimo?.data_preenchimento
+        ? new Date(ultimo.data_preenchimento).toLocaleDateString("pt-BR")
+        : "—";
+    document.getElementById("responsavel-indicador").textContent = responsavel;
+    document.getElementById("ultimo-preenchimento-indicador").textContent = data;
   })
-    .then(res => res.json())
-    .then(json => {
-      const lista = asList(json);
-      if (!lista.length) return;
-      const ultimo = lista[lista.length - 1];
-      const responsavel =
-        ultimo?.preenchido_por?.first_name ||
-        ultimo?.preenchido_por?.username || "—";
-      const data =
-        ultimo?.data_preenchimento
-          ? new Date(ultimo.data_preenchimento).toLocaleDateString("pt-BR")
-          : "—";
-      document.getElementById("responsavel-indicador").textContent = responsavel;
-      document.getElementById("ultimo-preenchimento-indicador").textContent = data;
-    })
-    .catch(error => console.error("Erro ao buscar último preenchimento:", error));
+  .catch(error => console.error("Erro ao buscar último preenchimento:", error));
 
   modal.classList.remove("hidden");
 
@@ -974,7 +1060,7 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
       <td class="px-4 py-2 border">
         ${formatarValorComTipo(item.valor, indicador.tipo_valor)}
         ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
-                          onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})">
+                          onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor}, ${indicador.id})">
                           <i class="fas fa-edit"></i>
                         </button>` : ''}
       </td>
@@ -990,7 +1076,7 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
         <button class="text-blue-600 underline text-sm hover:text-blue-800"
                 onclick="abrirComentarioPopup('${(item.comentario ?? '').toString().replace(/'/g, "\\'")}')">Ver</button>
         ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
-                          onclick="abrirModalEdicaoComentario(${item.id}, '${(item.comentario ?? '').toString().replace(/'/g, "\\'")}')">
+                          onclick="abrirModalEdicaoComentario(${item.id}, '${(item.comentario ?? '').toString().replace(/'/g, "\\'")}', ${indicador.id})">
                           <i class="fas fa-edit"></i>
                         </button>` : ''}
       </td>
@@ -1001,7 +1087,7 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
                      onclick="abrirProvasPopup('${item.provas[0]}')">Abrir</button>`
           : '-'}
         ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
-                          onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}')">
+                          onclick="abrirModalEdicaoProva(${item.id}, '${item.provas?.[0] || ''}', ${indicador.id})">
                           <i class="fas fa-edit"></i>
                         </button>` : ''}
       </td>
@@ -1155,6 +1241,17 @@ function aplicarFiltros() {
     });
   }
 
+  try {
+    const st = __peekReturnModal && __peekReturnModal();
+    if (st && st.indicadorId) {
+      const idx = indicadoresParaRenderizar.findIndex(x => Number(x.id) === Number(st.indicadorId));
+      if (idx >= 0) {
+        const totalPages = Math.max(1, Math.ceil(indicadoresParaRenderizar.length / __PAGE_SIZE));
+        __PAGE_INDEX = Math.min(Math.max(1, Math.floor(idx / __PAGE_SIZE) + 1), totalPages);
+      }
+    }
+  } catch(e) {}
+
   renderComPaginacao(indicadoresParaRenderizar);
 }
 
@@ -1226,11 +1323,12 @@ function fecharPopupProvas() {
 
 // --------- Editar valor / comentário / prova ---------
 
-function abrirModalEdicaoIndividual(idPreenchimento, valorAtual) {
+function abrirModalEdicaoIndividual(idPreenchimento, valorAtual, indicadorId) {
   const modal = document.getElementById('editar-valor-unico-modal');
   const input = document.getElementById('campo-novo-valor');
   input.value = valorAtual;
   input.dataset.preenchimentoId = idPreenchimento;
+  if (indicadorId != null) input.dataset.indicadorId = String(indicadorId);
   modal.classList.remove('hidden');
 }
 
@@ -1258,6 +1356,12 @@ async function salvarValorUnico() {
 
     alert("Valor atualizado com sucesso.");
     document.getElementById('editar-valor-unico-modal').classList.add('hidden');
+
+    try {
+      const __indicadorId = document.getElementById('campo-novo-valor')?.dataset?.indicadorId;
+      if (__indicadorId) __rememberReturnModal({ page: 'index-gestores', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
+
     location.reload();
   } catch (err) {
     console.error("Erro ao atualizar o valor:", err);
@@ -1265,11 +1369,12 @@ async function salvarValorUnico() {
   }
 }
 
-function abrirModalEdicaoComentario(idPreenchimento, comentarioAtual) {
+function abrirModalEdicaoComentario(idPreenchimento, comentarioAtual, indicadorId) {
   const modal = document.getElementById('editar-comentario-modal');
   const textarea = document.getElementById('campo-novo-comentario');
   textarea.value = comentarioAtual;
   textarea.dataset.preenchimentoId = idPreenchimento;
+  if (indicadorId != null) textarea.dataset.indicadorId = String(indicadorId);
   modal.classList.remove('hidden');
 }
 
@@ -1292,6 +1397,12 @@ async function salvarComentario() {
 
     alert("Comentário atualizado com sucesso.");
     document.getElementById('editar-comentario-modal').classList.add('hidden');
+
+    try {
+      const __indicadorId = document.getElementById('campo-novo-comentario')?.dataset?.indicadorId;
+      if (__indicadorId) __rememberReturnModal({ page: 'index-gestores', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
+
     location.reload();
   } catch (err) {
     console.error("Erro ao atualizar o comentário:", err);
@@ -1299,7 +1410,7 @@ async function salvarComentario() {
   }
 }
 
-function abrirModalEdicaoProva(idPreenchimento, provaAtual) {
+function abrirModalEdicaoProva(idPreenchimento, provaAtual, indicadorId) {
   const modal = document.getElementById('editar-prova-modal');
   const provaInfo = document.getElementById('prova-atual-info');
   const nomeProva = document.getElementById('nome-prova-atual');
@@ -1312,10 +1423,42 @@ function abrirModalEdicaoProva(idPreenchimento, provaAtual) {
     nomeProva.textContent = nomeArquivo;
     linkProva.href = provaAtual;
     provaInfo.classList.remove('hidden');
+
+    // ➕ cria (ou reaproveita) o botão Excluir Prova dentro do bloco de info
+    let btnExcluir = document.getElementById('btn-excluir-prova');
+    if (!btnExcluir) {
+      btnExcluir = document.createElement('button');
+      btnExcluir.id = 'btn-excluir-prova';
+      btnExcluir.className = 'ml-3 bg-red-600 text-white px-3 py-1 rounded text-sm hover:bg-red-700';
+      btnExcluir.textContent = 'Excluir prova';
+      // anexa no container "prova-atual-info" (ajuste a posição se quiser)
+      provaInfo.appendChild(btnExcluir);
+    }
+    // atualiza datasets e liga o click
+    btnExcluir.dataset.preenchimentoId = String(idPreenchimento);
+    if (indicadorId != null) btnExcluir.dataset.indicadorId = String(indicadorId);
+    btnExcluir.onclick = () => {
+      btnExcluir.disabled = true;
+      const original = btnExcluir.textContent;
+      btnExcluir.textContent = 'Excluindo...';
+
+      // Não aguardamos a Promise para não capturar AbortError do reload
+      excluirProva(idPreenchimento, indicadorId).finally(() => {
+        // Se por algum motivo NÃO recarregar (erro real), reabilita o botão
+        btnExcluir.disabled = false;
+        btnExcluir.textContent = original;
+      });
+    };
+
   } else {
+    // sem prova atual: esconde bloco e remove o botão, se existir
     provaInfo.classList.add('hidden');
+    const btnExcluir = document.getElementById('btn-excluir-prova');
+    if (btnExcluir) btnExcluir.remove();
   }
+
   input.dataset.preenchimentoId = idPreenchimento;
+  if (indicadorId != null) input.dataset.indicadorId = String(indicadorId);
   modal.classList.remove('hidden');
 }
 
@@ -1355,9 +1498,82 @@ async function salvarProva() {
 
     alert("Prova atualizada com sucesso.");
     document.getElementById('editar-prova-modal').classList.add('hidden');
+
+    try {
+      const __indicadorId = document.getElementById('campo-nova-prova')?.dataset?.indicadorId;
+      if (__indicadorId) __rememberReturnModal({ page: 'index-gestores', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
+
     location.reload();
   } catch (err) {
     console.error("Erro ao atualizar a prova:", err);
     alert("Erro ao atualizar a prova:\n" + err.message);
+  }
+}
+
+async function excluirProva(idPreenchimento, indicadorId) {
+  if (!confirm('Tem certeza que deseja excluir a prova deste preenchimento?')) return;
+
+  // Opcional: fecha o modal imediatamente (UX)
+  try { document.getElementById('editar-prova-modal')?.classList.add('hidden'); } catch(_) {}
+
+  try {
+    // Tentativa 1: JSON {arquivo: null}
+    const resJson = await fetch(`${apiBase}/preenchimentos/${idPreenchimento}/`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ arquivo: null })
+    });
+
+    if (resJson.ok) {
+      alert('Prova excluída com sucesso.');
+      try { if (indicadorId != null) __rememberReturnModal({ page: 'index-gestores', indicadorId: Number(indicadorId) }); } catch (_) {}
+      // usa timeout para não propagar AbortError do reload
+      setTimeout(() => location.reload(), 0);
+      return;
+    }
+
+    // Tentativa 2: multipart com campo vazio
+    const formData = new FormData();
+    formData.append('arquivo', '');
+    const resForm = await fetch(`${apiBase}/preenchimentos/${idPreenchimento}/`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData
+    });
+
+    if (resForm.ok) {
+      alert('Prova excluída com sucesso.');
+      try { if (indicadorId != null) __rememberReturnModal({ page: 'index-gestores', indicadorId: Number(indicadorId) }); } catch (_) {}
+      setTimeout(() => location.reload(), 0);
+      return;
+    }
+
+    // Monta mensagem de erro apenas se o backend devolver JSON
+    let msg = 'Erro ao excluir a prova.';
+    try {
+      const ct = resForm.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const errJson = await resForm.json();
+        const flat = Object.values(errJson).flat().join('\n');
+        msg += `\n${flat}`;
+      } else {
+        msg += `\nStatus: ${resForm.status} ${resForm.statusText}`;
+      }
+    } catch (_) { /* noop */ }
+    throw new Error(msg);
+
+  } catch (err) {
+    // Se o erro for aborto por navegação/reload, silencie
+    const msg = String(err?.message || err || '');
+    if (err?.name === 'AbortError' || /abort(ed)?|navigation|user aborted/i.test(msg)) {
+      // não mostrar alerta: operação seguiu e a página vai recarregar
+      return;
+    }
+    console.error('Erro ao excluir a prova:', err);
+    alert('Erro ao excluir a prova:\n' + (err?.message || err));
   }
 }

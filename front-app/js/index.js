@@ -25,6 +25,29 @@ function asList(data) {
   return [];
 }
 
+// 🔄 NOVO: busca todas as páginas do DRF (results/next)
+async function fetchAll(urlBase) {
+  const out = [];
+  let url = urlBase;
+  while (url) {
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Falha ao carregar: ${url}`);
+    const json = await res.json();
+
+    if (Array.isArray(json?.results)) {
+      out.push(...json.results);
+      url = json.next || null;
+    } else if (Array.isArray(json)) {
+      out.push(...json);
+      url = null;
+    } else {
+      out.push(json);
+      url = null;
+    }
+  }
+  return out;
+}
+
 /* ==== 🔸 Helpers de periodicidade ==== */
 
 // 1) normaliza periodicidade (1/2/3/6/12, ou strings tipo "bimestral" etc.)
@@ -114,6 +137,57 @@ if (!token) {
   window.location.href = 'login.html';
 }
 
+// === Persistência de estado de modal entre reloads ===
+function __rememberReturnModal(state) {
+  try { sessionStorage.setItem('kpiReturnModal', JSON.stringify({ ...state, t: Date.now() })); } catch (e) {}
+}
+function __peekReturnModal() {
+  try {
+    const raw = sessionStorage.getItem('kpiReturnModal');
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(e) { return null; }
+}
+function __clearReturnModal() {
+  try { sessionStorage.removeItem('kpiReturnModal'); } catch(e) {}
+}
+
+// Reabrir modal após render
+let __reopenedOnce = false;
+function __tryReopenFromMemory(sourceList) {
+  if (__reopenedOnce) return;
+  const st = __peekReturnModal && __peekReturnModal();
+  if (!st || !st.indicadorId) return;
+
+  const src = Array.isArray(sourceList) ? sourceList
+    : (Array.isArray(window.__LAST_RENDER_DATA) && window.__LAST_RENDER_DATA.length ? window.__LAST_RENDER_DATA
+    : (Array.isArray(window.indicadoresCalculados) ? window.indicadoresCalculados : []));
+
+  const ind = (Array.isArray(src) ? src : []).find(i => Number(i.id) === Number(st.indicadorId));
+  if (ind && typeof mostrarDetalhes === 'function') {
+    __reopenedOnce = true;
+    __clearReturnModal && __clearReturnModal();
+    mostrarDetalhes(ind);
+    return;
+  }
+
+  // fallback: aguarda até o primeiro render completar
+  let tries = 0;
+  const iv = setInterval(() => {
+    tries++;
+    const src2 = (Array.isArray(window.__LAST_RENDER_DATA) && window.__LAST_RENDER_DATA.length) ? window.__LAST_RENDER_DATA
+      : (Array.isArray(window.indicadoresCalculados) ? window.indicadoresCalculados : []);
+    const ind2 = (Array.isArray(src2) ? src2 : []).find(i => Number(i.id) === Number(st.indicadorId));
+    if (ind2 && typeof mostrarDetalhes === 'function') {
+      clearInterval(iv);
+      __reopenedOnce = true;
+      __clearReturnModal && __clearReturnModal();
+      mostrarDetalhes(ind2);
+    }
+    if (tries > 30) clearInterval(iv);
+  }, 150);
+}
+
 // --------- Boot ---------
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -137,23 +211,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     preencherSelectSetores();
 
     // 3) Carrega dados necessários em paralelo
-    const [indicadoresRes, preenchimentosRes, metasRes] = await Promise.all([
-      fetch(`${apiBase}/indicadores/`, { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch(`${apiBase}/preenchimentos/`, { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch(`${apiBase}/metas-mensais/`, { headers: { 'Authorization': `Bearer ${token}` } }),
+    const [indicadoresBase, preenchimentos, metasMensais] = await Promise.all([
+      fetchAll(`${apiBase}/indicadores/?page_size=100`),          // ajuste o page_size se quiser
+      fetchAll(`${apiBase}/preenchimentos/?ordering=ano,mes,id`), // garante ordem crescente
+      fetchAll(`${apiBase}/metas-mensais/?ordering=mes,id`),
     ]);
-
-    if (!indicadoresRes.ok || !preenchimentosRes.ok || !metasRes.ok) {
-      throw new Error('Falha ao carregar dados');
-    }
-
-    const indicadoresData = await indicadoresRes.json();
-    const preenchimentosData = await preenchimentosRes.json();
-    const metasMensaisData = await metasRes.json();
-
-    const indicadoresBase = asList(indicadoresData);
-    const preenchimentos = asList(preenchimentosData);
-    const metasMensais = asList(metasMensaisData);
 
     // 4) Calcula os indicadores com histórico/último valor/meta mensal
     const indicadoresCalculados = indicadoresBase.map(indicador => {
@@ -243,6 +305,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         metas_mensais: metasDoIndicador
       };
     });
+
+    // Disponibiliza a base completa para reabertura de modal
+    window.indicadoresCalculados = indicadoresCalculados;
 
     // Apenas ativos e com pelo menos um mês preenchido
     indicadoresComValoresGlobais = indicadoresCalculados.filter(ind => {
@@ -375,6 +440,9 @@ function renderComPaginacao(dadosFiltrados) {
 
   // usa a função já existente que monta os cards
   renderizarIndicadores(pageSlice);
+
+  // 🔁 tenta reabrir o modal após o render da página atual
+  __tryReopenFromMemory(pageSlice);
 
   // desenha os botões da paginação
   renderPaginacao(total, totalPages);
@@ -544,7 +612,7 @@ function mostrarDetalhes(indicador) {
         ${formatarValorComTipo(item.valor, indicador.tipo_valor)}
         ${podeEditar ? `
           <button class="text-blue-600 underline text-sm hover:text-blue-800 ml-2"
-                  onclick="abrirModalEdicaoIndividual(${item.id}, ${Number(item.valor)})">
+                  onclick="abrirModalEdicaoIndividual(${item.id}, ${Number(item.valor)}, ${indicador.id})">
             Editar Valor
           </button>` : ``}
       </td>
@@ -586,25 +654,21 @@ function mostrarDetalhes(indicador) {
   aplicarFiltroHistorico(indicador, "", "");
 
   // Último preenchimento (compatível com paginação)
-  fetch(`${apiBase}/preenchimentos/?indicador=${indicador.id}`, {
-    headers: { 'Authorization': `Bearer ${token}` }
+  fetchAll(`${apiBase}/preenchimentos/?indicador=${indicador.id}&ordering=ano,mes,id`)
+  .then(lista => {
+    if (!lista.length) return;
+    const ultimo = lista[lista.length - 1];
+    const responsavel =
+      ultimo?.preenchido_por?.first_name ||
+      ultimo?.preenchido_por?.username || "—";
+    const data =
+      ultimo?.data_preenchimento
+        ? new Date(ultimo.data_preenchimento).toLocaleDateString("pt-BR")
+        : "—";
+    document.getElementById("responsavel-indicador").textContent = responsavel;
+    document.getElementById("ultimo-preenchimento-indicador").textContent = data;
   })
-    .then(res => res.json())
-    .then(json => {
-      const lista = asList(json);
-      if (!lista.length) return;
-      const ultimo = lista[lista.length - 1];
-      const responsavel =
-        ultimo?.preenchido_por?.first_name ||
-        ultimo?.preenchido_por?.username || "—";
-      const data =
-        ultimo?.data_preenchimento
-          ? new Date(ultimo.data_preenchimento).toLocaleDateString("pt-BR")
-          : "—";
-      document.getElementById("responsavel-indicador").textContent = responsavel;
-      document.getElementById("ultimo-preenchimento-indicador").textContent = data;
-    })
-    .catch(error => console.error("Erro ao buscar último preenchimento:", error));
+  .catch(error => console.error("Erro ao buscar último preenchimento:", error));
 
   modal.classList.remove("hidden");
 
@@ -890,7 +954,7 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
       <td class="px-4 py-2 border">
         ${formatarValorComTipo(item.valor, indicador.tipo_valor)}
         ${podeEditar ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-800"
-                          onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor})">
+                          onclick="abrirModalEdicaoIndividual(${item.id}, ${item.valor}, ${indicador.id})">
                           <i class="fas fa-edit"></i>
                         </button>` : ''}
       </td>
@@ -1060,6 +1124,18 @@ function aplicarFiltros() {
     });
   }
 
+  // Se há pedido de reabrir modal, posiciona a paginação no item
+  try {
+    const st = __peekReturnModal && __peekReturnModal();
+    if (st && st.indicadorId) {
+      const idx = indicadoresParaRenderizar.findIndex(x => Number(x.id) === Number(st.indicadorId));
+      if (idx >= 0) {
+        const totalPages = Math.max(1, Math.ceil(indicadoresParaRenderizar.length / __PAGE_SIZE));
+        __PAGE_INDEX = Math.min(Math.max(1, Math.floor(idx / __PAGE_SIZE) + 1), totalPages);
+      }
+    }
+  } catch(e) {}
+
   // Render final com paginação
   renderComPaginacao(indicadoresParaRenderizar);
 }
@@ -1187,6 +1263,16 @@ async function salvarMetaMensal() {
 
     alert('Meta do mês atualizada com sucesso.');
     modal.classList.add('hidden');
+    try { 
+      const __indicadorId = (
+        typeof indicadorId !== 'undefined' ? indicadorId :
+        (document.getElementById('campo-nova-meta')?.dataset.indicadorId
+        || document.getElementById('campo-novo-valor')?.dataset.indicadorId
+        || document.getElementById('campo-novo-comentario')?.dataset.indicadorId
+        || document.getElementById('campo-nova-prova')?.dataset.indicadorId)
+      );
+      if (__indicadorId) __rememberReturnModal({ page: 'index', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
     location.reload();
   } catch (e) {
     console.error(e);
@@ -1200,11 +1286,12 @@ document.getElementById('cancelar-edicao-meta')?.addEventListener('click', () =>
 });
 document.getElementById('salvar-meta')?.addEventListener('click', salvarMetaMensal);
 
-function abrirModalEdicaoIndividual(idPreenchimento, valorAtual) {
+function abrirModalEdicaoIndividual(idPreenchimento, valorAtual, indicadorId) {
   const modal = document.getElementById('editar-valor-unico-modal');
   const input = document.getElementById('campo-novo-valor');
   input.value = valorAtual;
   input.dataset.preenchimentoId = idPreenchimento;
+  if (indicadorId != null) { input.dataset.indicadorId = String(indicadorId); }
   modal.classList.remove('hidden');
 }
 
@@ -1232,6 +1319,15 @@ async function salvarValorUnico() {
 
     alert("Valor atualizado com sucesso.");
     document.getElementById('editar-valor-unico-modal').classList.add('hidden');
+    try { 
+      const __indicadorId = (
+        document.getElementById('campo-nova-meta')?.dataset.indicadorId
+        || document.getElementById('campo-novo-valor')?.dataset.indicadorId
+        || document.getElementById('campo-novo-comentario')?.dataset.indicadorId
+        || document.getElementById('campo-nova-prova')?.dataset.indicadorId
+      );
+      if (__indicadorId) __rememberReturnModal({ page: 'index', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
     location.reload();
   } catch (err) {
     console.error("Erro ao atualizar o valor:", err);
@@ -1266,6 +1362,15 @@ async function salvarComentario() {
 
     alert("Comentário atualizado com sucesso.");
     document.getElementById('editar-comentario-modal').classList.add('hidden');
+    try { 
+      const __indicadorId = (
+        document.getElementById('campo-nova-meta')?.dataset.indicadorId
+        || document.getElementById('campo-novo-valor')?.dataset.indicadorId
+        || document.getElementById('campo-novo-comentario')?.dataset.indicadorId
+        || document.getElementById('campo-nova-prova')?.dataset.indicadorId
+      );
+      if (__indicadorId) __rememberReturnModal({ page: 'index', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
     location.reload();
   } catch (err) {
     console.error("Erro ao atualizar o comentário:", err);
@@ -1329,9 +1434,39 @@ async function salvarProva() {
 
     alert("Prova atualizada com sucesso.");
     document.getElementById('editar-prova-modal').classList.add('hidden');
+    try { 
+      const __indicadorId = (
+        document.getElementById('campo-nova-meta')?.dataset.indicadorId
+        || document.getElementById('campo-novo-valor')?.dataset.indicadorId
+        || document.getElementById('campo-novo-comentario')?.dataset.indicadorId
+        || document.getElementById('campo-nova-prova')?.dataset.indicadorId
+      );
+      if (__indicadorId) __rememberReturnModal({ page: 'index', indicadorId: Number(__indicadorId) });
+    } catch(e) {}
     location.reload();
   } catch (err) {
     console.error("Erro ao atualizar a prova:", err);
     alert("Erro ao atualizar a prova:\n" + err.message);
   }
 }
+
+// Reopen detalhe modal after reload (safe, late hook)
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const __ret = __peekReturnModal && __peekReturnModal();
+    if (!__ret || !__ret.indicadorId) return;
+    let tries = 0;
+    const iv = setInterval(() => {
+      tries++;
+      const data = (typeof __LAST_RENDER_DATA !== 'undefined') ? __LAST_RENDER_DATA : null;
+      const src = Array.isArray(data) && data.length ? data : (Array.isArray(window.indicadoresCalculados) ? window.indicadoresCalculados : []);
+      const ind = (Array.isArray(src) ? src : []).find(i => Number(i.id) === Number(__ret.indicadorId));
+      if (ind && typeof mostrarDetalhes === 'function') {
+        clearInterval(iv);
+        __clearReturnModal && __clearReturnModal();
+        mostrarDetalhes(ind);
+      }
+      if (tries > 20) clearInterval(iv);
+    }, 150);
+  } catch(e) {}
+});
