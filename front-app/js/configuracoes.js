@@ -111,6 +111,165 @@ function configurarFormularioTrocaSenhaMaster() {
   });
 }
 
+// === [Toggle: permitir edição de meta pelo Gestor] ===========================
+const FLAG_META_GESTOR_KEY = "permitirEditarMetaGestor";
+
+/** Lê flag do backend; fallback para localStorage */
+async function lerFlagPermitirMetaGestor() {
+  try {
+    const resp = await fetchComTokenRenovado(`${window.API_BASE_URL}/api/configuracoes/`, {
+      method: "GET"
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      // aceita snake_case OU camelCase, caso o renderer mude
+      const raw = (
+        (data && (data.permitir_editar_meta_gestor ?? data.permitirEditarMetaGestor))
+      );
+      if (typeof raw !== "undefined") {
+        const v = Boolean(raw);
+        try { localStorage.setItem(FLAG_META_GESTOR_KEY, JSON.stringify(v)); } catch(_) {}
+        return v;
+      }
+    }
+  } catch (e) {
+    console.warn("Falha ao ler /api/configuracoes:", e);
+  }
+  // fallback offline
+  try {
+    const local = localStorage.getItem(FLAG_META_GESTOR_KEY);
+    return local ? JSON.parse(local) : false;
+  } catch(_) {
+    return false;
+  }
+}
+
+/** Salva flag no backend; fallback para localStorage */
+async function salvarFlagPermitirMetaGestor(valor) {
+  const payload = { permitir_editar_meta_gestor: Boolean(valor) };
+
+  // 1) Tenta UPSERT via POST no singleton (/configuracoes/)
+  try {
+    const resp = await fetchComTokenRenovado(`${window.API_BASE_URL}/api/configuracoes/`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    if (resp.ok) {
+      try { localStorage.setItem(FLAG_META_GESTOR_KEY, JSON.stringify(payload.permitir_editar_meta_gestor)); } catch(_) {}
+      return true;
+    }
+  } catch (e) {
+    console.warn("POST /api/configuracoes/ falhou, tentando PATCH no detalhe…", e);
+  }
+
+  // 2) Fallback: busca o ID do singleton e faz PATCH no detalhe (/configuracoes/{id}/)
+  try {
+    const getResp = await fetchComTokenRenovado(`${window.API_BASE_URL}/api/configuracoes/`, { method: "GET" });
+    if (getResp.ok) {
+      const data = await getResp.json();
+      const id = data?.id;
+      if (id) {
+        const patchResp = await fetchComTokenRenovado(`${window.API_BASE_URL}/api/configuracoes/${id}/`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+        if (patchResp.ok) {
+          try { localStorage.setItem(FLAG_META_GESTOR_KEY, JSON.stringify(payload.permitir_editar_meta_gestor)); } catch(_) {}
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("PATCH /api/configuracoes/{id}/ falhou:", e);
+  }
+
+  // 3) Último recurso: persiste localmente para manter UI consistente até próxima sincronização
+  try { localStorage.setItem(FLAG_META_GESTOR_KEY, JSON.stringify(payload.permitir_editar_meta_gestor)); } catch(_) {}
+  return false;
+}
+
+/** Renderiza card e botão na página de Configurações */
+async function renderToggleEditarMetaGestor() {
+  const containerPai =
+    document.querySelector("main") ||
+    document.querySelector(".container") ||
+    document.body;
+
+  const wrapper = document.createElement("div");
+  wrapper.className =
+    "mt-6 bg-white dark:bg-gray-900 shadow rounded-xl p-5 border border-gray-100 dark:border-gray-800";
+  wrapper.innerHTML = `
+    <h2 class="text-lg font-semibold">Permissões dos Gestores</h2>
+
+    <!-- Toggle logo abaixo do título -->
+    <div class="mt-3">
+      <label class="inline-flex items-center gap-3 cursor-pointer select-none">
+        <span id="lbl-status-meta-gestor" class="text-sm text-gray-700 dark:text-gray-300">Carregando...</span>
+        <input id="sw-meta-gestor" type="checkbox" class="sr-only"
+               aria-label="Permitir edição de meta por gestores">
+        <span id="sw-track" class="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-300 transition">
+          <span id="sw-thumb" class="inline-block h-5 w-5 rounded-full bg-white shadow transform transition translate-x-0"></span>
+        </span>
+      </label>
+    </div>
+
+    <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
+      Controla se gestores podem <strong>editar a meta do indicador</strong> pelo modal do dashboard deles.
+    </p>
+  `;
+  containerPai.appendChild(wrapper);
+
+  const lbl = wrapper.querySelector("#lbl-status-meta-gestor");
+  const input = wrapper.querySelector("#sw-meta-gestor");
+  const track = wrapper.querySelector("#sw-track");
+  const thumb = wrapper.querySelector("#sw-thumb");
+
+  let flag = await lerFlagPermitirMetaGestor();
+
+  function aplicarEstilos(ativo) {
+    // Track
+    track.classList.toggle("bg-gray-300", !ativo);
+    track.classList.toggle("bg-emerald-500", ativo);
+    // Thumb
+    thumb.classList.toggle("translate-x-0", !ativo);
+    thumb.classList.toggle("translate-x-5", ativo);
+    // Label
+    lbl.textContent = ativo ? "ATIVADO" : "DESATIVADO";
+    lbl.className = ativo
+      ? "text-sm text-emerald-700 dark:text-emerald-400"
+      : "text-sm text-gray-700 dark:text-gray-300";
+  }
+
+  function atualizarUI() {
+    input.checked = flag;
+    aplicarEstilos(flag);
+  }
+
+  atualizarUI();
+
+  input.addEventListener("change", async () => {
+    flag = input.checked;
+    aplicarEstilos(flag);
+
+    // desabilita enquanto salva para evitar alternâncias rápidas
+    input.disabled = true;
+    const ok = await salvarFlagPermitirMetaGestor(flag);
+    input.disabled = false;
+
+    if (!ok) {
+      // se falhou, refaz leitura do backend/local p/ garantir consistência visual
+      flag = await lerFlagPermitirMetaGestor();
+      input.checked = flag;
+      aplicarEstilos(flag);
+      alert("Não foi possível salvar no servidor agora. O estado pode sincronizar depois.");
+    }
+
+    console.info(flag
+      ? "Edição de meta por gestores ATIVADA."
+      : "Edição de meta por gestores DESATIVADA.");
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const perfil = localStorage.getItem("perfil_usuario");
   if (perfil !== "master") {
@@ -121,4 +280,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   carregarDadosUsuario();
   configurarFormularioTrocaSenhaMaster();
+
+  // **NOVO**: renderiza o card com o botão de ativar/desativar edição de meta para Gestores
+  renderToggleEditarMetaGestor().catch(err => console.error(err));
 });

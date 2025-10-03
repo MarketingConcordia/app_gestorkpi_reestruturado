@@ -35,15 +35,31 @@ class CleanModelSerializer(serializers.ModelSerializer):
 # 🔹 CONFIGURAÇÃO PREENCHIMENTO
 # =============================
 class ConfiguracaoSerializer(CleanModelSerializer):
+    # torna explícito (não é obrigatório, mas ajuda na leitura)
+    permitir_editar_meta_gestor = serializers.BooleanField(required=False)
+
     class Meta:
         model = Configuracao
-        fields = '__all__'
+        fields = '__all__'          # inclui permitir_editar_meta_gestor
         read_only_fields = ('id',)
 
     def validate_dia_limite_preenchimento(self, value):
         if not (1 <= value <= 31):
             raise serializers.ValidationError("O dia limite deve estar entre 1 e 31.")
         return value
+
+    # 🔁 Mapeia camelCase -> snake_case ao receber do frontend
+    def to_internal_value(self, data):
+        if 'permitirEditarMetaGestor' in data and 'permitir_editar_meta_gestor' not in data:
+            data = data.copy()
+            data['permitir_editar_meta_gestor'] = data.pop('permitirEditarMetaGestor')
+        return super().to_internal_value(data)
+
+    # 🔁 Também devolve camelCase no GET (sem quebrar quem usa snake_case)
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        rep['permitirEditarMetaGestor'] = rep.get('permitir_editar_meta_gestor')
+        return rep
 
 
 # =============================

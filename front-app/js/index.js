@@ -244,13 +244,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       const metaDoMes = metasDoIndicador.find(m => (m.mes || '').startsWith(mesStr));
       const metaValor = metaDoMes ? parseFloat(metaDoMes.valor_meta) : parseFloat(indicador.valor_meta);
 
+      const isManualValido = (
+        p?.origem !== 'backfill-auto' &&
+        p?.preenchido_por &&
+        p?.valor_realizado != null
+      );
+      const responsavelDoMes = isManualValido
+        ? (p.preenchido_por.first_name || p.preenchido_por.username || '—')
+        : '—';
+
       porMes.set(mesStr, {
         id: p.id,
         data: `${mesStr}-01`,
         valor: p.valor_realizado,
         meta: metaValor,
         comentario: p.comentario,
-        provas: p.arquivo ? [p.arquivo] : []
+        provas: p.arquivo ? [p.arquivo] : [],
+        responsavel: responsavelDoMes
       });
     });
     const historico = Array.from(porMes.values())
@@ -258,6 +268,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 🔸 o “último” também respeita periodicidade
     const ultimoPreenchimento = preenchimentosDoIndicador.at(-1);
+
+    let responsavelUltimoMes = '—';
+    if (ultimoPreenchimento) {
+      const isManualValidoUlt = (
+        ultimoPreenchimento?.origem !== 'backfill-auto' &&
+        ultimoPreenchimento?.preenchido_por &&
+        ultimoPreenchimento?.valor_realizado != null
+      );
+      responsavelUltimoMes = isManualValidoUlt
+        ? (ultimoPreenchimento.preenchido_por.first_name
+            || ultimoPreenchimento.preenchido_por.username
+            || '—')
+        : '—';
+    }
 
       let valorAtual = null;
       let valorMeta = parseFloat(indicador.valor_meta);
@@ -298,6 +322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         atingido: atingido,
         variacao: parseFloat(variacao.toFixed(2)),
         responsavel: responsavel,
+        responsavel_ultimo_mes: responsavelUltimoMes,
         ultimaAtualizacao: ultimaAtualizacao,
         comentarios: comentarios,
         provas: provas,
@@ -503,9 +528,78 @@ function renderPaginacao(total, totalPages) {
   });
 }
 
+// === Topo do modal: último preenchimento válido (prioriza humano) =============
+async function carregarUltimoPreenchimentoTopo(indicadorId) {
+  const elResp = document.getElementById('responsavel-indicador');
+  const elData = document.getElementById('ultimo-preenchimento-indicador');
+  if (!elResp || !elData || !Number.isFinite(Number(indicadorId))) return;
+
+  // placeholder enquanto carrega
+  elResp.textContent = 'Carregando último valor...';
+  elData.textContent = 'Carregando último valor...';
+
+  try {
+    // busca TODAS as páginas já ordenadas por mais recente primeiro, se o backend aceitar
+    // (se não aceitar, ordenamos em JS logo abaixo)
+    const url = `${apiBase}/preenchimentos/?indicador=${indicadorId}&ordering=-data_preenchimento,-id&page_size=100`;
+    const regs = await fetchAll(url);
+
+    // chave de ordenação por competência YYYYMM (ignora edições posteriores)
+    const keyYM = (p) => {
+      const y = Number(p?.ano) || 0;
+      const m = Number(p?.mes) || 0;
+      return (y * 100 + m);
+    };
+    const ordenarPorCompetenciaDesc = (a, b) => keyYM(b) - keyYM(a);
+
+    // 1) SOMENTE registros com valor preenchido contam como preenchimento
+    const somenteComValor = regs.filter(p => p?.valor_realizado != null);
+
+    // 2) Prioriza HUMANO (não-backfill) com valor
+    const humanos = somenteComValor.filter(p =>
+      p?.origem !== 'backfill-auto' && p?.preenchido_por
+    );
+
+    // 3) Ordena por competência (YYYYMM) desc — valor mais recente
+    humanos.sort(ordenarPorCompetenciaDesc);
+    somenteComValor.sort(ordenarPorCompetenciaDesc);
+
+    // 4) Escolha final: último HUMANO; senão, último geral
+    const escolhido = humanos[0] || somenteComValor[0];
+
+    if (escolhido) {
+      const nome =
+        (escolhido?.preenchido_por?.first_name) ||
+        (escolhido?.preenchido_por?.username) ||
+        '—';
+
+      // formata a data: usa data_preenchimento; se não houver, cai para ano/mes
+      let dataLegivel = 'Sem dados';
+      if (escolhido?.data_preenchimento) {
+        const d = new Date(escolhido.data_preenchimento);
+        if (!Number.isNaN(d.getTime())) dataLegivel = d.toLocaleDateString('pt-BR');
+      } else if (escolhido?.ano && escolhido?.mes) {
+        const a = String(escolhido.ano).padStart(4, '0');
+        const m = String(escolhido.mes).padStart(2, '0');
+        dataLegivel = new Date(`${a}-${m}-01`).toLocaleDateString('pt-BR');
+      }
+
+      elResp.textContent = nome;
+      elData.textContent = dataLegivel;
+    } else {
+      elResp.textContent = '—';
+      elData.textContent = 'Sem dados';
+    }
+  } catch (e) {
+    console.warn('Falha ao carregar último preenchimento do topo:', e);
+    elResp.textContent = '—';
+    elData.textContent = 'Sem dados';
+  }
+}
+
 // --------- Modal de detalhes ---------
 
-function mostrarDetalhes(indicador) {
+async function mostrarDetalhes(indicador) {
   const modal = document.getElementById('detalhe-modal');
   const modalContent = document.getElementById('modal-content');
   const setoresGestor = window.__setoresUsuarioNomes || [];
@@ -572,14 +666,17 @@ function mostrarDetalhes(indicador) {
     </div>
   `;
 
-  // Topo
+  // Topo (preenche campos "fixos")
   document.getElementById('titulo-indicador').textContent = indicador.nome;
   document.getElementById('tipo-meta-indicador').textContent = indicador.tipo_meta;
   document.getElementById('setor-indicador').textContent = indicador.setor_nome;
   document.getElementById('meta-indicador').textContent = formatarValorComTipo(indicador.valor_meta, indicador.tipo_valor);
-  document.getElementById('responsavel-indicador').textContent = indicador.responsavel || '—';
-  document.getElementById('ultimo-preenchimento-indicador').textContent = indicador.ultimaAtualizacao
-    ? new Date(indicador.ultimaAtualizacao).toLocaleDateString('pt-BR') : 'Sem dados';
+
+  // Topo (responsável e última data) — agora sempre via API seguindo a regra
+  // coloca placeholders e, em seguida, carrega assíncrono:
+  document.getElementById('responsavel-indicador').textContent = 'Carregando...';
+  document.getElementById('ultimo-preenchimento-indicador').textContent = 'Carregando...';
+  carregarUltimoPreenchimentoTopo(indicador.id);
 
   // Tabela (competência MM/AAAA, sem usar Date)
   const corpoTabela = document.getElementById('corpo-historico-modal');
@@ -652,23 +749,6 @@ function mostrarDetalhes(indicador) {
 
   // Filtro histórico
   aplicarFiltroHistorico(indicador, "", "");
-
-  // Último preenchimento (compatível com paginação)
-  fetchAll(`${apiBase}/preenchimentos/?indicador=${indicador.id}&ordering=ano,mes,id`)
-  .then(lista => {
-    if (!lista.length) return;
-    const ultimo = lista[lista.length - 1];
-    const responsavel =
-      ultimo?.preenchido_por?.first_name ||
-      ultimo?.preenchido_por?.username || "—";
-    const data =
-      ultimo?.data_preenchimento
-        ? new Date(ultimo.data_preenchimento).toLocaleDateString("pt-BR")
-        : "—";
-    document.getElementById("responsavel-indicador").textContent = responsavel;
-    document.getElementById("ultimo-preenchimento-indicador").textContent = data;
-  })
-  .catch(error => console.error("Erro ao buscar último preenchimento:", error));
 
   modal.classList.remove("hidden");
 
@@ -1052,7 +1132,7 @@ function aplicarFiltros() {
     let ultimaAtualizacaoNoPeriodo = null;
     let comentariosNoPeriodo = indicadorOriginal.comentarios;
     let provasNoPeriodo = indicadorOriginal.provas;
-    let responsavelNoPeriodo = indicadorOriginal.responsavel;
+    let responsavelNoPeriodo = '—';
     let variacaoNoPeriodo = indicadorOriginal.variacao;
 
     if (mesSelecionado === 'mes-atual' || (anoSelecionado === 'todos' && mesSelecionado === 'todos')) {
@@ -1060,6 +1140,8 @@ function aplicarFiltros() {
       valorNoPeriodo = indicadorOriginal.valor_atual;
       metaNoPeriodo = parseFloat(indicadorOriginal.valor_meta);
       ultimaAtualizacaoNoPeriodo = indicadorOriginal.ultimaAtualizacao;
+      // responsável do último mês existente
+      responsavelNoPeriodo = indicadorOriginal.responsavel_ultimo_mes || '—';
     } else {
       // Busca no histórico o valor do período selecionado
       const preenchimentoDoPeriodo = (indicadorOriginal.historico || [])
@@ -1079,6 +1161,8 @@ function aplicarFiltros() {
         ultimaAtualizacaoNoPeriodo = preenchimentoDoPeriodo.data;
         comentariosNoPeriodo = preenchimentoDoPeriodo.comentario;
         provasNoPeriodo = preenchimentoDoPeriodo.provas;
+        // responsável do mês filtrado
+        responsavelNoPeriodo = preenchimentoDoPeriodo.responsavel || '—';
 
         if (metaNoPeriodo !== 0) {
           variacaoNoPeriodo = ((valorNoPeriodo - metaNoPeriodo) / metaNoPeriodo) * 100;
@@ -1086,7 +1170,7 @@ function aplicarFiltros() {
           variacaoNoPeriodo = 0;
         }
       } else {
-        return; // sem dados no período, não renderiza
+        return;
       }
     }
 

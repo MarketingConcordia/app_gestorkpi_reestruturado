@@ -422,15 +422,28 @@ async function carregarIndicadores() {
       console.warn("[pendentes] vazio após filtro. Exemplo do set:", normalizados.slice(0, 5));
     }
 
+    // 🔹 NOVO: carregar mapa de periodicidade e janela (inicioYM/fimYM) por indicador
+    await montarMapaConfigIndicadores(pendentesDoMeuSetor);
+
     // ✅ Se você quer APENAS esconder o que JÁ tem valor (qualquer usuário), mantenha:
     await carregarPreenchidosParaPendentes(pendentesDoMeuSetor);
 
-    // 🔹 Agrupar por indicador (sem bloquear por janela/passo — o backend já gera só meses válidos)
+    // 🔹 Agrupar por indicador (AGORA respeitando a janela do indicador)
     const agrupados = {};
     pendentesDoMeuSetor.forEach(item => {
       const jaTemQualquerPreench =
         __preenchidosQualquerUsuario.has(`${item.id}_${item.mes}_${item.ano}`);
       if (jaTemQualquerPreench) return;
+
+      // 🔸 NOVO: corta pelo mes_final (e mes_inicial se houver)
+      const cfg = __mapaConfigsIndicadores.get(item.id);
+      const inicioYM = cfg?.inicioYM || null;
+      const fimYM    = cfg?.fimYM    || null;
+
+      // Se tiver janela configurada, só deixa entrar se estiver dentro (<= fimYM)
+      if (!inJanela(Number(item.ano), Number(item.mes), inicioYM, fimYM)) {
+        return; // fora da janela -> NÃO gera pendência
+      }
 
       const chave = `${item.id}`;
       if (!agrupados[chave]) {

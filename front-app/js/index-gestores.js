@@ -87,6 +87,96 @@ function asList(data) {
   return [];
 }
 
+/* === Flag de permissão vinda de Configurações (API ou localStorage) === */
+const FLAG_META_GESTOR_KEY = "permitirEditarMetaGestor";
+
+async function gestorPodeEditarMeta() {
+  try {
+    const resp = await fetch(`${apiBase}/configuracoes/`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (Object.prototype.hasOwnProperty.call(data, "permitir_editar_meta_gestor")) {
+        const v = Boolean(data.permitir_editar_meta_gestor);
+        try { localStorage.setItem(FLAG_META_GESTOR_KEY, JSON.stringify(v)); } catch(_) {}
+        return v;
+      }
+    }
+  } catch (_) {}
+  try {
+    const local = localStorage.getItem(FLAG_META_GESTOR_KEY);
+    return local ? JSON.parse(local) : false;
+  } catch (_) { return false; }
+}
+
+/* === Upsert de meta mensal via API === */
+async function upsertMetaMensal(indicadorId, competenciaYYYYMM, valorMeta) {
+  const mesISO = `${competenciaYYYYMM}-01`; // backend espera "YYYY-MM-01"
+
+  // 1) Verifica se já existe meta para o mês
+  const resCheck = await fetch(
+    `${apiBase}/metas-mensais/?indicador=${indicadorId}&mes=${mesISO}`,
+    { headers: { "Authorization": `Bearer ${token}` } }
+  );
+
+  if (!resCheck.ok) {
+    const msg = await resCheck.text().catch(() => "");
+    throw new Error(`Falha ao consultar metas mensais. ${msg}`);
+  }
+
+  const data = await resCheck.json();
+  const existentes = Array.isArray(data?.results) ? data.results : (Array.isArray(data) ? data : []);
+
+  // 2) Se existe, PATCH; se não, POST
+  if (existentes.length > 0) {
+    const id = existentes[0].id;
+    const r = await fetch(`${apiBase}/metas-mensais/${id}/`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({ valor_meta: Number(valorMeta) })
+    });
+    if (!r.ok) {
+      const msg = await r.text().catch(() => "");
+      throw new Error(`Falha ao atualizar a meta mensal. ${msg}`);
+    }
+    return await r.json();
+  } else {
+    const r = await fetch(`${apiBase}/metas-mensais/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        indicador: indicadorId,
+        mes: mesISO,                      // <<< campo correto
+        valor_meta: Number(valorMeta)
+      })
+    });
+    if (!r.ok) {
+      const msg = await r.text().catch(() => "");
+      throw new Error(`Falha ao criar a meta mensal. ${msg}`);
+    }
+    return await r.json();
+  }
+}
+
+/* === Ação do botão da tabela === */
+async function editarMetaMensal(indicadorId, competenciaYYYYMM, metaAtual) {
+  const atual = prompt(`Nova meta para ${competenciaYYYYMM} (use ponto como separador decimal):`, String(metaAtual ?? ""));
+  if (atual === null) return;
+  const numero = Number(String(atual).replace(',', '.'));
+  if (!Number.isFinite(numero)) { alert("Valor inválido."); return; }
+  await upsertMetaMensal(indicadorId, competenciaYYYYMM, numero);
+  try { __rememberReturnModal({ page: 'index-gestores', indicadorId: Number(indicadorId) }); } catch(_) {}
+  alert("Meta atualizada.");
+  location.reload();
+}
+
 // 🔄 Busca TODAS as páginas do DRF (results/next)
 async function fetchAll(urlBase) {
   const out = [];
@@ -108,6 +198,65 @@ async function fetchAll(urlBase) {
     }
   }
   return out;
+}
+
+// === Topo do modal: último preenchimento válido (prioriza humano) =============
+async function carregarUltimoPreenchimentoTopo(indicadorId) {
+  const elResp = document.getElementById('responsavel-indicador');
+  const elData = document.getElementById('ultimo-preenchimento-indicador');
+  if (!elResp || !elData || !Number.isFinite(Number(indicadorId))) return;
+
+  elResp.textContent = 'Carregando último valor...';
+  elData.textContent = 'Carregando último valor...';
+
+  try {
+    // ordenado do mais recente pro mais antigo (se o backend aceitar)
+    const url = `${apiBase}/preenchimentos/?indicador=${indicadorId}&ordering=-data_preenchimento,-id&page_size=100`;
+    const regs = await fetchAll(url);
+
+    // só conta se tiver valor
+    const somenteComValor = regs.filter(p => p?.valor_realizado != null);
+
+    // prioriza humano (não backfill) com valor
+    const humanos = somenteComValor.filter(p =>
+      p?.origem !== 'backfill-auto' && p?.preenchido_por
+    );
+
+    // ordena por competência (YYYYMM) desc como fallback
+    const keyYM = (p) => (Number(p?.ano) || 0) * 100 + (Number(p?.mes) || 0);
+    const ordenarPorCompetenciaDesc = (a, b) => keyYM(b) - keyYM(a);
+
+    humanos.sort(ordenarPorCompetenciaDesc);
+    somenteComValor.sort(ordenarPorCompetenciaDesc);
+
+    const escolhido = humanos[0] || somenteComValor[0];
+
+    if (escolhido) {
+      const nome = (escolhido?.preenchido_por?.first_name)
+                || (escolhido?.preenchido_por?.username)
+                || '—';
+
+      let dataLegivel = 'Sem dados';
+      if (escolhido?.data_preenchimento) {
+        const d = new Date(escolhido.data_preenchimento);
+        if (!Number.isNaN(d.getTime())) dataLegivel = d.toLocaleDateString('pt-BR');
+      } else if (escolhido?.ano && escolhido?.mes) {
+        const a = String(escolhido.ano).padStart(4, '0');
+        const m = String(escolhido.mes).padStart(2, '0');
+        dataLegivel = new Date(`${a}-${m}-01`).toLocaleDateString('pt-BR');
+      }
+
+      elResp.textContent = nome;
+      elData.textContent = dataLegivel;
+    } else {
+      elResp.textContent = '—';
+      elData.textContent = 'Sem dados';
+    }
+  } catch (e) {
+    console.warn('Falha ao carregar último preenchimento do topo:', e);
+    elResp.textContent = '—';
+    elData.textContent = 'Sem dados';
+  }
 }
 
 /* ==== 🔸 Helpers de periodicidade ==== */
@@ -337,13 +486,23 @@ document.addEventListener('DOMContentLoaded', async () => {
           const metaDoMes = metasDoIndicador.find(m => (m.mes || '').startsWith(mesStr));
           const metaValor = metaDoMes ? parseFloat(metaDoMes.valor_meta) : parseFloat(indicador.valor_meta);
 
+          const isManualValido = (
+            p?.origem !== 'backfill-auto' &&
+            p?.preenchido_por &&
+            p?.valor_realizado != null
+          );
+          const responsavelDoMes = isManualValido
+            ? (p.preenchido_por.first_name || p.preenchido_por.username || '—')
+            : '—';
+
           porMes.set(mesStr, {
             id: p.id,
             data: `${mesStr}-01`,
             valor: p.valor_realizado,
             meta: metaValor,
             comentario: p.comentario,
-            provas: p.arquivo ? [p.arquivo] : []
+            provas: p.arquivo ? [p.arquivo] : [],
+            responsavel: responsavelDoMes
           });
         });
 
@@ -352,6 +511,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 🔸 "último" também já respeita periodicidade
         const ultimoPreenchimento = preenchimentosDoIndicador.at(-1);
+
+        let responsavelUltimoMes = '—';
+        if (ultimoPreenchimento) {
+          const isManualValidoUlt = (
+            ultimoPreenchimento?.origem !== 'backfill-auto' &&
+            ultimoPreenchimento?.preenchido_por &&
+            ultimoPreenchimento?.valor_realizado != null
+          );
+          responsavelUltimoMes = isManualValidoUlt
+            ? (ultimoPreenchimento.preenchido_por.first_name
+                || ultimoPreenchimento.preenchido_por.username
+                || '—')
+            : '—';
+        }
 
         let valorAtual = null; // <-- era 0
         let valorMeta = parseFloat(indicador.valor_meta);
@@ -392,6 +565,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           atingido: atingido,
           variacao: parseFloat(variacao.toFixed(2)),
           responsavel: responsavel,
+          responsavel_ultimo_mes: responsavelUltimoMes,
           ultimaAtualizacao: ultimaAtualizacao,
           comentarios: comentarios,
           origem: ultimoPreenchimento?.origem || '',
@@ -623,7 +797,7 @@ function renderPaginacao(total, totalPages) {
 
 // --------- Modal de detalhes ---------
 
-function mostrarDetalhes(indicador) {
+async function mostrarDetalhes(indicador) {
   const modal = document.getElementById('detalhe-modal');
   const modalContent = document.getElementById('modal-content');
   const setoresGestor = window.__setoresUsuarioNomes || [];
@@ -694,9 +868,11 @@ function mostrarDetalhes(indicador) {
   document.getElementById('tipo-meta-indicador').textContent = indicador.tipo_meta;
   document.getElementById('setor-indicador').textContent = indicador.setor_nome;
   document.getElementById('meta-indicador').textContent = formatarValorComTipo(indicador.valor_meta, indicador.tipo_valor);
-  document.getElementById('responsavel-indicador').textContent = indicador.responsavel || '—';
-  document.getElementById('ultimo-preenchimento-indicador').textContent = indicador.ultimaAtualizacao
-    ? new Date(indicador.ultimaAtualizacao).toLocaleDateString('pt-BR') : 'Sem dados';
+
+  // usa a mesma regra do index.js: prioriza HUMANO com valor
+  document.getElementById('responsavel-indicador').textContent = 'Carregando...';
+  document.getElementById('ultimo-preenchimento-indicador').textContent = 'Carregando...';
+  carregarUltimoPreenchimentoTopo(indicador.id);
 
   // Tabela (competência MM/AAAA, sem usar Date)
   const corpoTabela = document.getElementById('corpo-historico-modal');
@@ -709,6 +885,8 @@ function mostrarDetalhes(indicador) {
       const chaveMes = String(item.data).slice(0,7); // YYYY-MM
       porMesModal.set(chaveMes, item);               // último do mês prevalece
     });
+
+  const permitirEditarMeta = await gestorPodeEditarMeta();
 
   Array.from(porMesModal.values()).forEach(item => {
     const [ano, mes] = String(item.data).slice(0,7).split('-');
@@ -725,7 +903,19 @@ function mostrarDetalhes(indicador) {
     tr.innerHTML = `
       <td class="px-4 py-2 border">${mes}/${ano}</td>
       <td class="px-4 py-2 border">${formatarValorComTipo(item.valor, indicador.tipo_valor)}</td>
-      <td class="px-4 py-2 border">${formatarValorComTipo(metaFinal, indicador.tipo_valor)}</td>
+
+      <td class="px-4 py-2 border">
+        ${formatarValorComTipo(metaFinal, indicador.tipo_valor)}
+        ${
+          (permitirEditarMeta && podeEditar)
+            ? `<button class="text-amber-600 text-xs px-2 py-1 ml-2 rounded hover:text-amber-700"
+                      onclick="editarMetaMensal(${indicador.id}, '${chave}', ${metaFinal})">
+                <i class="fas fa-edit"></i>
+              </button>`
+            : ``
+        }
+      </td>
+
       <td class="px-4 py-2 border">${statusTexto}</td>
       <td class="px-4 py-2 border text-center">
         <button class="text-blue-600 underline text-sm hover:text-blue-800"
@@ -759,21 +949,6 @@ function mostrarDetalhes(indicador) {
   aplicarFiltroHistorico(indicador, "", "");
 
   // Último preenchimento (paginação + ordenação garantida)
-fetchAll(`${apiBase}/preenchimentos/?indicador=${indicador.id}&ordering=ano,mes,id`)
-  .then(lista => {
-    if (!lista.length) return;
-    const ultimo = lista[lista.length - 1];
-    const responsavel =
-      ultimo?.preenchido_por?.first_name ||
-      ultimo?.preenchido_por?.username || "—";
-    const data =
-      ultimo?.data_preenchimento
-        ? new Date(ultimo.data_preenchimento).toLocaleDateString("pt-BR")
-        : "—";
-    document.getElementById("responsavel-indicador").textContent = responsavel;
-    document.getElementById("ultimo-preenchimento-indicador").textContent = data;
-  })
-  .catch(error => console.error("Erro ao buscar último preenchimento:", error));
 
   modal.classList.remove("hidden");
 
@@ -1067,7 +1242,18 @@ function aplicarFiltroHistorico(indicador, dataInicio = "", dataFim = "") {
 
       <td class="px-4 py-2 border">
         ${formatarValorComTipo(metaFinal, indicador.tipo_valor)}
-        
+        ${
+          // leitura rápida do localStorage para não bloquear (a API já gravou essa flag antes)
+          (function(){
+            try { return JSON.parse(localStorage.getItem('permitirEditarMetaGestor') || 'false'); }
+            catch(_) { return false; }
+          })() && podeEditar
+            ? `<button class="text-blue-600 text-xs px-2 py-1 ml-2 rounded hover:text-blue-700"
+                      onclick="editarMetaMensal(${indicador.id}, '${chave}', ${metaFinal})">
+                <i class="fas fa-edit"></i>
+              </button>`
+            : ``
+        }
       </td>
 
       <td class="px-4 py-2 border">${statusTexto}</td>
@@ -1167,7 +1353,7 @@ function aplicarFiltros() {
     let ultimaAtualizacaoNoPeriodo = null;
     let comentariosNoPeriodo = indicadorOriginal.comentarios;
     let provasNoPeriodo = indicadorOriginal.provas;
-    let responsavelNoPeriodo = indicadorOriginal.responsavel;
+    let responsavelNoPeriodo = '—';
     let variacaoNoPeriodo = indicadorOriginal.variacao;
 
     if (mesSelecionado === 'mes-atual' || (anoSelecionado === 'todos' && mesSelecionado === 'todos')) {
@@ -1176,7 +1362,8 @@ function aplicarFiltros() {
       ultimaAtualizacaoNoPeriodo = indicadorOriginal.ultimaAtualizacao;
       comentariosNoPeriodo = indicadorOriginal.comentarios;
       provasNoPeriodo = indicadorOriginal.provas;
-      responsavelNoPeriodo = indicadorOriginal.responsavel;
+      // responsável do último mês existente
+      responsavelNoPeriodo = indicadorOriginal.responsavel_ultimo_mes || '—';
       variacaoNoPeriodo = indicadorOriginal.variacao;
     } else {
       const preenchimentoDoPeriodo = (indicadorOriginal.historico || [])
@@ -1196,6 +1383,8 @@ function aplicarFiltros() {
         ultimaAtualizacaoNoPeriodo = preenchimentoDoPeriodo.data;
         comentariosNoPeriodo = preenchimentoDoPeriodo.comentario;
         provasNoPeriodo = preenchimentoDoPeriodo.provas;
+        // responsável do mês filtrado
+        responsavelNoPeriodo = preenchimentoDoPeriodo.responsavel || '—';
 
         if (metaNoPeriodo !== 0) {
           variacaoNoPeriodo = ((valorNoPeriodo - metaNoPeriodo) / metaNoPeriodo) * 100;
@@ -1203,7 +1392,7 @@ function aplicarFiltros() {
           variacaoNoPeriodo = 0;
         }
       } else {
-        return; // sem dados no período, não renderiza
+        return;
       }
     }
 

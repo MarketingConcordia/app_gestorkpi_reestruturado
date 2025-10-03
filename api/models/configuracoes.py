@@ -147,6 +147,12 @@ class Configuracao(models.Model):
         help_text="Até esse dia os gestores podem preencher indicadores."
     )
 
+    # ➕ NOVO: flag que seu botão liga/desliga no frontend
+    permitir_editar_meta_gestor = models.BooleanField(
+        default=False,
+        help_text="Quando ativo, gestores podem editar metas mensais no frontend."
+    )
+
     class Meta:
         verbose_name = "Configuração de Preenchimento"
         verbose_name_plural = "Configurações de Preenchimento"
